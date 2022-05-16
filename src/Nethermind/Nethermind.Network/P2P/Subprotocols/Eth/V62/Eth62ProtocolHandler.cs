@@ -277,25 +277,25 @@ namespace Nethermind.Network.P2P.Subprotocols.Eth.V62
 
         public override void NotifyOfNewBlock(Block block, SendBlockPriority priority)
         {
-            // if (!ShouldGossip)
-            // {
-            //     return;
-            // }
-            //
-            // switch (priority)
-            // {
-            //     case SendBlockPriority.High:
-            //         SendNewBlock(block);
-            //         break;
-            //     case SendBlockPriority.Low:
-            //         HintNewBlock(block.Hash, block.Number);
-            //         break;
-            //     default:
-            //         Logger.Error(
-            //             $"Unknown priority ({priority}) passed to {nameof(NotifyOfNewBlock)} - handling as low priority");
-            //         HintNewBlock(block.Hash, block.Number);
-            //         break;
-            // }
+            if (!ShouldGossip)
+            {
+                return;
+            }
+            
+            switch (priority)
+            {
+                case SendBlockPriority.High:
+                    SendNewBlock(block);
+                    break;
+                case SendBlockPriority.Low:
+                    HintNewBlock(block.Hash, block.Number);
+                    break;
+                default:
+                    Logger.Error(
+                        $"Unknown priority ({priority}) passed to {nameof(NotifyOfNewBlock)} - handling as low priority");
+                    HintNewBlock(block.Hash, block.Number);
+                    break;
+            }
         }
 
         private void SendNewBlock(Block block)
