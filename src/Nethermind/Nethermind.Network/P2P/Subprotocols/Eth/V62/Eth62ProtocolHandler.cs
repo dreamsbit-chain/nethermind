@@ -277,10 +277,10 @@ namespace Nethermind.Network.P2P.Subprotocols.Eth.V62
 
         public override void NotifyOfNewBlock(Block block, SendBlockPriority priority)
         {
-            if (!ShouldGossip)
-            {
-                return;
-            }
+            // if (!ShouldGossip)
+            // {
+            //     return;
+            // }
 
             switch (priority)
             {
