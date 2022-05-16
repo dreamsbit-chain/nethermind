@@ -222,6 +222,12 @@ namespace Nethermind.Hive
                     return;
                 }
 
+                if (_logger.IsInfo)
+                    _logger.Info(
+                        $"HIVE suggested {block.ToString(Block.Format.Short)}, now best suggested header {_blockTree.BestSuggestedHeader}, head {_blockTree.Head?.Header?.ToString(BlockHeader.Format.Short)}");
+                
+                await WaitForBlockProcessing(_resetEvent);
+                
                 try
                 {
                     if (_tracer.Trace(block, NullBlockTracer.Instance) is null)
@@ -234,12 +240,6 @@ namespace Nethermind.Hive
                     if (_logger.IsError) _logger.Error($"Failed to process block {block}", ex);
                     return;
                 }
-                
-                if (_logger.IsInfo)
-                    _logger.Info(
-                        $"HIVE suggested {block.ToString(Block.Format.Short)}, now best suggested header {_blockTree.BestSuggestedHeader}, head {_blockTree.Head?.Header?.ToString(BlockHeader.Format.Short)}");
-                
-                await WaitForBlockProcessing(_resetEvent);
             }
             catch (Exception e)
             {
