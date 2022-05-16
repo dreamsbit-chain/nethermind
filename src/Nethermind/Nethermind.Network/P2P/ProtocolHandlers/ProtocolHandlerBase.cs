@@ -85,7 +85,7 @@ namespace Nethermind.Network.P2P.ProtocolHandlers
         protected void Send<T>(T message) where T : P2PMessage
         {
             Interlocked.Increment(ref Counter);
-            Logger.Info($"{Counter} Sending {typeof(T).Name}");
+            Logger.Info($"{Counter} Sending {typeof(T).Name}, msg: {message.ToString()}");
             if(NetworkDiagTracer.IsEnabled)
                 NetworkDiagTracer.ReportOutgoingMessage(Session.Node?.Address, Name, message.ToString());
             Session.DeliverMessage(message);
