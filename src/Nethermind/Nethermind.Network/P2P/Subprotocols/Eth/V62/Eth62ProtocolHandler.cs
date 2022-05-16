@@ -281,21 +281,21 @@ namespace Nethermind.Network.P2P.Subprotocols.Eth.V62
             // {
             //     return;
             // }
-
-            switch (priority)
-            {
-                case SendBlockPriority.High:
-                    SendNewBlock(block);
-                    break;
-                case SendBlockPriority.Low:
-                    HintNewBlock(block.Hash, block.Number);
-                    break;
-                default:
-                    Logger.Error(
-                        $"Unknown priority ({priority}) passed to {nameof(NotifyOfNewBlock)} - handling as low priority");
-                    HintNewBlock(block.Hash, block.Number);
-                    break;
-            }
+            //
+            // switch (priority)
+            // {
+            //     case SendBlockPriority.High:
+            //         SendNewBlock(block);
+            //         break;
+            //     case SendBlockPriority.Low:
+            //         HintNewBlock(block.Hash, block.Number);
+            //         break;
+            //     default:
+            //         Logger.Error(
+            //             $"Unknown priority ({priority}) passed to {nameof(NotifyOfNewBlock)} - handling as low priority");
+            //         HintNewBlock(block.Hash, block.Number);
+            //         break;
+            // }
         }
 
         private void SendNewBlock(Block block)
