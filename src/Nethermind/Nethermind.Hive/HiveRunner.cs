@@ -222,18 +222,18 @@ namespace Nethermind.Hive
                     return;
                 }
 
-                // try
-                // {
-                //     if (_tracer.Trace(block, NullBlockTracer.Instance) is null)
-                //     {
-                //         return;
-                //     }
-                // }
-                // catch (Exception ex)
-                // {
-                //     if (_logger.IsError) _logger.Error($"Failed to process block {block}", ex);
-                //     return;
-                // }
+                try
+                {
+                    if (_tracer.Trace(block, NullBlockTracer.Instance) is null)
+                    {
+                        return;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    if (_logger.IsError) _logger.Error($"Failed to process block {block}", ex);
+                    return;
+                }
                 
                 if (_logger.IsInfo)
                     _logger.Info(
