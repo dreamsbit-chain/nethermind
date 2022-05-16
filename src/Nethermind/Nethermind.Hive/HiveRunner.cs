@@ -198,7 +198,7 @@ namespace Nethermind.Hive
 
         private async Task WaitForBlockProcessing(SemaphoreSlim semaphore)
         {
-            if (!await semaphore.WaitAsync(5000))
+            if (!await semaphore.WaitAsync(50000))
             {
                 throw new InvalidOperationException();
             }
