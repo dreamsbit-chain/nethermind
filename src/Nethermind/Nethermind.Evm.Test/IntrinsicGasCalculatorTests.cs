@@ -1,22 +1,7 @@
-//  Copyright (c) 2021 Demerzel Solutions Limited
-//  This file is part of the Nethermind library.
-// 
-//  The Nethermind library is free software: you can redistribute it and/or modify
-//  it under the terms of the GNU Lesser General Public License as published by
-//  the Free Software Foundation, either version 3 of the License, or
-//  (at your option) any later version.
-// 
-//  The Nethermind library is distributed in the hope that it will be useful,
-//  but WITHOUT ANY WARRANTY; without even the implied warranty of
-//  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-//  GNU Lesser General Public License for more details.
-// 
-//  You should have received a copy of the GNU Lesser General Public License
-//  along with the Nethermind. If not, see <http://www.gnu.org/licenses/>.
-// 
+// SPDX-FileCopyrightText: 2022 Demerzel Solutions Limited
+// SPDX-License-Identifier: LGPL-3.0-only
 
 using System.Collections.Generic;
-using System.Collections.Immutable;
 using System.IO;
 using FluentAssertions;
 using Nethermind.Core;
@@ -41,21 +26,20 @@ namespace Nethermind.Evm.Test
         public static IEnumerable<(List<object> orderQueue, long Cost)> AccessTestCaseSource()
         {
             yield return (new List<object> { }, 0);
-            yield return (new List<object> {Address.Zero}, 2400);
-            yield return (new List<object> {Address.Zero, (UInt256)1}, 4300);
-            yield return (new List<object> {Address.Zero, (UInt256)1, TestItem.AddressA, (UInt256)1}, 8600);
-            yield return (new List<object> {Address.Zero, (UInt256)1, Address.Zero, (UInt256)1}, 8600);
+            yield return (new List<object> { Address.Zero }, 2400);
+            yield return (new List<object> { Address.Zero, (UInt256)1 }, 4300);
+            yield return (new List<object> { Address.Zero, (UInt256)1, TestItem.AddressA, (UInt256)1 }, 8600);
+            yield return (new List<object> { Address.Zero, (UInt256)1, Address.Zero, (UInt256)1 }, 8600);
         }
 
         public static IEnumerable<(byte[] Data, int OldCost, int NewCost)> DataTestCaseSource()
         {
-            yield return (new byte[] {0}, 4, 4);
-            yield return (new byte[] {1}, 68, 16);
-            yield return (new byte[] {0, 0, 1}, 76, 24);
-            yield return (new byte[] {1, 1, 0}, 140, 36);
-            yield return (new byte[] {0, 0, 1, 1}, 144, 40);
+            yield return (new byte[] { 0 }, 4, 4);
+            yield return (new byte[] { 1 }, 68, 16);
+            yield return (new byte[] { 0, 0, 1 }, 76, 24);
+            yield return (new byte[] { 1, 1, 0 }, 140, 36);
+            yield return (new byte[] { 0, 0, 1, 1 }, 144, 40);
         }
-
         [TestCaseSource(nameof(TestCaseSource))]
         public void Intrinsic_cost_is_calculated_properly((Transaction Tx, long Cost, string Description) testCase)
         {
@@ -127,6 +111,9 @@ namespace Nethermind.Evm.Test
             Test(Istanbul.Instance, true);
             Test(MuirGlacier.Instance, true);
             Test(Berlin.Instance, true);
+            Test(GrayGlacier.Instance, true);
+            Test(Shanghai.Instance, true);
+            Test(Cancun.Instance, true);
         }
     }
 }

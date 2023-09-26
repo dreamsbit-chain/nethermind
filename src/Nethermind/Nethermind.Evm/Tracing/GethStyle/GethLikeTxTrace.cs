@@ -1,40 +1,24 @@
-﻿//  Copyright (c) 2021 Demerzel Solutions Limited
-//  This file is part of the Nethermind library.
-// 
-//  The Nethermind library is free software: you can redistribute it and/or modify
-//  it under the terms of the GNU Lesser General Public License as published by
-//  the Free Software Foundation, either version 3 of the License, or
-//  (at your option) any later version.
-// 
-//  The Nethermind library is distributed in the hope that it will be useful,
-//  but WITHOUT ANY WARRANTY; without even the implied warranty of
-//  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-//  GNU Lesser General Public License for more details.
-// 
-//  You should have received a copy of the GNU Lesser General Public License
-//  along with the Nethermind. If not, see <http://www.gnu.org/licenses/>.
+// SPDX-FileCopyrightText: 2022 Demerzel Solutions Limited
+// SPDX-License-Identifier: LGPL-3.0-only
 
+using System;
 using System.Collections.Generic;
 using Newtonsoft.Json;
 
-namespace Nethermind.Evm.Tracing.GethStyle
+namespace Nethermind.Evm.Tracing.GethStyle;
+
+public class GethLikeTxTrace
 {
-    public class GethLikeTxTrace
-    {
-        public Stack<Dictionary<string, string>> StoragesByDepth { get; } = new();
+    public GethLikeTxTrace() => Entries = new List<GethTxTraceEntry>();
 
-        public GethLikeTxTrace()
-        {
-            Entries = new List<GethTxTraceEntry>();
-        }
-        
-        public long Gas { get; set; }
+    public Stack<Dictionary<string, string>> StoragesByDepth { get; } = new();
 
-        public bool Failed { get; set; }
+    public long Gas { get; set; }
 
-        public byte[] ReturnValue { get; set; }
-        
-        [JsonProperty(PropertyName = "structLogs")]
-        public List<GethTxTraceEntry> Entries { get; set; }
-    }
+    public bool Failed { get; set; }
+
+    public byte[] ReturnValue { get; set; } = Array.Empty<byte>();
+
+    [JsonProperty(PropertyName = "structLogs")]
+    public List<GethTxTraceEntry> Entries { get; set; }
 }

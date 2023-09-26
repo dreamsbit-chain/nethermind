@@ -1,26 +1,10 @@
-//  Copyright (c) 2021 Demerzel Solutions Limited
-//  This file is part of the Nethermind library.
-// 
-//  The Nethermind library is free software: you can redistribute it and/or modify
-//  it under the terms of the GNU Lesser General Public License as published by
-//  the Free Software Foundation, either version 3 of the License, or
-//  (at your option) any later version.
-// 
-//  The Nethermind library is distributed in the hope that it will be useful,
-//  but WITHOUT ANY WARRANTY; without even the implied warranty of
-//  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-//  GNU Lesser General Public License for more details.
-// 
-//  You should have received a copy of the GNU Lesser General Public License
-//  along with the Nethermind. If not, see <http://www.gnu.org/licenses/>.
-// 
+// SPDX-FileCopyrightText: 2022 Demerzel Solutions Limited
+// SPDX-License-Identifier: LGPL-3.0-only
 
 using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
-using Nethermind.Abi;
-using Nethermind.AccountAbstraction.Data;
 using Nethermind.Core;
 using Nethermind.Core.Crypto;
 using Nethermind.Core.Extensions;
@@ -28,11 +12,10 @@ using Nethermind.Evm;
 using Nethermind.Evm.Tracing;
 using Nethermind.Int256;
 using Nethermind.Logging;
-using Nethermind.State;
 
 namespace Nethermind.AccountAbstraction.Executor
 {
-    public class UserOperationTxTracer : ITxTracer
+    public class UserOperationTxTracer : TxTracer
     {
         private static readonly Instruction[] _bannedOpcodes =
         {
@@ -48,29 +31,24 @@ namespace Nethermind.AccountAbstraction.Executor
 
         private readonly bool _paymasterWhitelisted;
         private readonly bool _hasInitCode;
-        private readonly IStateProvider _stateProvider;
 
         private bool _paymasterValidationMode;
-        private int numberOfCreate2Calls = 0;
+        private int _numberOfCreate2Calls;
         private bool _nextOpcodeMustBeCall; // GAS is allowed only if it followed immediately by a CALL, DELEGATECALL, STATICCALL, or CALLCODE
-        
+
         public UserOperationTxTracer(
-            Transaction? transaction,
             bool paymasterWhitelisted,
             bool hasInitCode,
-            IStateProvider stateProvider,
             Address sender,
             Address paymaster,
             Address entryPointAddress,
             ILogger logger)
         {
-            Transaction = transaction;
             Success = true;
             AccessedStorage = new Dictionary<Address, HashSet<UInt256>>();
             AccessedAddresses = ImmutableHashSet<Address>.Empty;
             _paymasterWhitelisted = paymasterWhitelisted;
             _hasInitCode = hasInitCode;
-            _stateProvider = stateProvider;
             _sender = sender;
             _paymaster = paymaster;
             _entryPointAddress = entryPointAddress;
@@ -78,70 +56,34 @@ namespace Nethermind.AccountAbstraction.Executor
             Output = Array.Empty<byte>();
         }
 
-        public Transaction? Transaction { get; }
         public IDictionary<Address, HashSet<UInt256>> AccessedStorage { get; }
         public IReadOnlySet<Address> AccessedAddresses { get; private set; }
         public bool Success { get; private set; }
         public string? Error { get; private set; }
-        public long GasSpent { get; set; }
         public byte[] Output { get; private set; }
 
-        public bool IsTracingReceipt => true;
-        public bool IsTracingActions => true;
-        public bool IsTracingOpLevelStorage => true;
-        public bool IsTracingMemory => false;
-        public bool IsTracingInstructions => true;
-        public bool IsTracingRefunds => false;
-        public bool IsTracingCode => false;
-        public bool IsTracingStack => false;
-        public bool IsTracingState => true;
-        public bool IsTracingStorage => false;
-        public bool IsTracingBlockHash => false;
-        public bool IsTracingAccess => true;
+        public override bool IsTracingReceipt => true;
+        public override bool IsTracingActions => true;
+        public override bool IsTracingOpLevelStorage => true;
+        public override bool IsTracingInstructions => true;
+        public override bool IsTracingState => true;
+        public override bool IsTracingAccess => true;
 
-        public void MarkAsSuccess(Address recipient, long gasSpent, byte[] output, LogEntry[] logs,
+        public override void MarkAsSuccess(Address recipient, long gasSpent, byte[] output, LogEntry[] logs,
             Keccak? stateRoot = null)
         {
-            GasSpent = gasSpent;
             Output = output;
         }
 
-        public void MarkAsFailed(Address recipient, long gasSpent, byte[] output, string error,
+        public override void MarkAsFailed(Address recipient, long gasSpent, byte[] output, string error,
             Keccak? stateRoot = null)
         {
-            GasSpent = gasSpent;
             Success = false;
             Error = error;
             Output = output;
         }
 
-        public void ReportBalanceChange(Address address, UInt256? before, UInt256? after)
-        {
-        }
-
-        public void ReportCodeChange(Address address, byte[]? before, byte[]? after)
-        {
-        }
-
-        public void ReportNonceChange(Address address, UInt256? before, UInt256? after)
-        {
-        }
-
-        public void ReportAccountRead(Address address)
-        {
-        }
-
-        public void ReportStorageChange(StorageCell storageCell, byte[] before, byte[] after)
-        {
-            throw new NotImplementedException();
-        }
-
-        public void ReportStorageRead(StorageCell storageCell)
-        {
-            throw new NotImplementedException();
-        }
-
-        public void StartOperation(int depth, long gas, Instruction opcode, int pc, bool isPostMerge = false)
+        public override void StartOperation(int depth, long gas, Instruction opcode, int pc, bool isPostMerge = false)
         {
             if (_nextOpcodeMustBeCall)
             {
@@ -156,12 +98,12 @@ namespace Nethermind.AccountAbstraction.Executor
                     Error ??= $"simulation error: GAS opcode was called at depth {depth} pc {pc} but was not immediately followed by CALL, DELEGATECALL, STATICCALL, or CALLCODE";
                 }
             }
-            
+
             if (depth > 1 && opcode == Instruction.GAS)
             {
                 _nextOpcodeMustBeCall = true;
             }
-            
+
             // spec: These opcodes are forbidden because their outputs may differ between simulation and execution,
             // so simulation of calls using these opcodes does not reliably tell what would happen if these calls are later done on-chain.
             if (depth > 1 && _bannedOpcodes.Contains(opcode))
@@ -170,7 +112,7 @@ namespace Nethermind.AccountAbstraction.Executor
                 {
                     return;
                 }
-                
+
                 _logger.Info($"AA: Encountered banned opcode {opcode} during simulation at depth {depth} pc {pc}");
                 Success = false;
                 Error ??= $"simulation failed: encountered banned opcode {opcode} at depth {depth} pc {pc}";
@@ -178,21 +120,21 @@ namespace Nethermind.AccountAbstraction.Executor
             // in the simulateWallet function of the entryPoint, NUMBER is called once
             // signalling that validation is switching from the wallet to the paymaster
             else if (depth == 1 && opcode == Instruction.NUMBER)
-            { 
+            {
                 _paymasterValidationMode = true;
             }
             else if (opcode == Instruction.CREATE2)
             {
-                numberOfCreate2Calls++;
+                _numberOfCreate2Calls++;
 
                 if (_paymasterValidationMode && _paymasterWhitelisted)
                 {
                     return;
                 }
-                
+
                 if (_hasInitCode)
                 {
-                    if (numberOfCreate2Calls > 1)
+                    if (_numberOfCreate2Calls > 1)
                     {
                         Success = false;
                         Error = $"simulation failed: op with non-empty initCode called CREATE2 more than once";
@@ -200,7 +142,7 @@ namespace Nethermind.AccountAbstraction.Executor
                 }
                 else
                 {
-                    if (numberOfCreate2Calls > 0)
+                    if (_numberOfCreate2Calls > 0)
                     {
                         Success = false;
                         Error = $"simulation failed: op with empty initCode called CREATE2";
@@ -209,48 +151,13 @@ namespace Nethermind.AccountAbstraction.Executor
             }
         }
 
-        public void ReportOperationError(EvmExceptionType error)
-        {
-        }
-
-        public void ReportOperationRemainingGas(long gas)
-        {
-        }
-
-        public void SetOperationStack(List<string> stackTrace)
-        {
-            throw new NotImplementedException();
-        }
-
-        public void ReportStackPush(in ReadOnlySpan<byte> stackItem)
-        {
-        }
-
-        public void SetOperationMemory(List<string> memoryTrace)
-        {
-            throw new NotImplementedException();
-        }
-
-        public void SetOperationMemorySize(ulong newSize)
-        {
-            throw new NotImplementedException();
-        }
-
-        public void ReportMemoryChange(long offset, in ReadOnlySpan<byte> data)
-        {
-        }
-
-        public void ReportStorageChange(in ReadOnlySpan<byte> key, in ReadOnlySpan<byte> value)
-        {
-        }
-
-        public void SetOperationStorage(Address address, UInt256 storageIndex, ReadOnlySpan<byte> newValue,
+        public override void SetOperationStorage(Address address, UInt256 storageIndex, ReadOnlySpan<byte> newValue,
             ReadOnlySpan<byte> currentValue)
         {
             HandleStorageAccess(address, storageIndex);
         }
 
-        public void LoadOperationStorage(Address address, UInt256 storageIndex, ReadOnlySpan<byte> value)
+        public override void LoadOperationStorage(Address address, UInt256 storageIndex, ReadOnlySpan<byte> value)
         {
             HandleStorageAccess(address, storageIndex);
         }
@@ -258,7 +165,7 @@ namespace Nethermind.AccountAbstraction.Executor
         private void HandleStorageAccess(Address address, UInt256 storageIndex)
         {
             AddToAccessedStorage(address, storageIndex);
-            
+
             if (address == _entryPointAddress) return;
             // spec: The call does not access mutable state of any contract except the wallet/paymaster itself
             if (!_paymasterValidationMode)
@@ -279,28 +186,19 @@ namespace Nethermind.AccountAbstraction.Executor
             }
         }
 
-        public void ReportSelfDestruct(Address address, UInt256 balance, Address refundAddress)
-        {
-            //TODO: would this ever be allowed?
-        }
-
-        public void ReportAction(long gas, UInt256 value, Address from, Address to, ReadOnlyMemory<byte> input,
+        public override void ReportAction(long gas, UInt256 value, Address from, Address to, ReadOnlyMemory<byte> input,
             ExecutionType callType,
             bool isPrecompileCall = false)
         {
             if (value == 0) return;
 
             if (from == _sender && to == _entryPointAddress) return;
-            
+
             Success = false;
             Error ??= $"simulation failed: balance write allowed only from sender to entrypoint, instead found from: {from} to: {_entryPointAddress} with value {value}";
         }
 
-        public void ReportActionEnd(long gas, ReadOnlyMemory<byte> output)
-        {
-        }
-
-        public void ReportActionError(EvmExceptionType evmExceptionType)
+        public override void ReportActionError(EvmExceptionType evmExceptionType)
         {
             if (evmExceptionType == EvmExceptionType.OutOfGas)
             {
@@ -309,40 +207,12 @@ namespace Nethermind.AccountAbstraction.Executor
             }
         }
 
-        public void ReportActionEnd(long gas, Address deploymentAddress, ReadOnlyMemory<byte> deployedCode)
-        {
-        }
-
-        public void ReportBlockHash(Keccak blockHash)
-        {
-            throw new NotImplementedException();
-        }
-
-        public void ReportByteCode(byte[] byteCode)
-        {
-            throw new NotImplementedException();
-        }
-
-        public void ReportGasUpdateForVmTrace(long refund, long gasAvailable)
-        {
-        }
-
-        public void ReportRefund(long refund)
-        {
-            throw new NotImplementedException();
-        }
-
-        public void ReportExtraGasPressure(long extraGasPressure)
-        {
-            throw new NotImplementedException();
-        }
-
-        public void ReportAccess(IReadOnlySet<Address> accessedAddresses,
+        public override void ReportAccess(IReadOnlySet<Address> accessedAddresses,
             IReadOnlySet<StorageCell> accessedStorageCells)
         {
             AccessedAddresses = accessedAddresses;
         }
-        
+
         private void AddToAccessedStorage(Address address, UInt256 index)
         {
             if (AccessedStorage.TryGetValue(address, out HashSet<UInt256>? values))
@@ -351,7 +221,7 @@ namespace Nethermind.AccountAbstraction.Executor
                 return;
             }
 
-            AccessedStorage.Add(address, new HashSet<UInt256> {index});
+            AccessedStorage.Add(address, new HashSet<UInt256> { index });
         }
     }
 }

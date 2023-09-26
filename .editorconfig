@@ -13,6 +13,15 @@
 # top-most EditorConfig file
 root = true
 
+[*]
+end_of_line = lf
+indent_size = 4
+indent_style = space
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+file_header_template = SPDX-FileCopyrightText: 2023 Demerzel Solutions Limited\nSPDX-License-Identifier: LGPL-3.0-only
+
 ###############################
 # Other file type settings    #
 ###############################
@@ -26,7 +35,7 @@ indent_size = 2
 indent_size = 2
 
 # JSON files, other XML files
-[*.json, *.xml]
+[*.{json,xml}]
 indent_size = 2
 
 # Powershell files
@@ -35,7 +44,10 @@ indent_size = 2
 
 # Shell script files
 [*.sh]
-end_of_line = lf
+indent_size = 2
+
+# YAML files
+[*.{yml,yaml}]
 indent_size = 2
 
 ###############################
@@ -122,13 +134,8 @@ dotnet_naming_style.async_methods_style.required_suffix = Async
 ###############################
 # Core EditorConfig Options   #
 ###############################
-# All files
-[*]
-indent_style = space
+
 # Code files
-[*.{cs,csx,vb,vbx}]
-indent_size = 4
-insert_final_newline = true
 #charset = utf-8-bom
 ###############################
 # .NET Coding Conventions     #
@@ -169,7 +176,7 @@ dotnet_style_prefer_inferred_anonymous_type_member_names = true:suggestion
 ###############################
 # Style Definitions
 dotnet_naming_style.pascal_case_style.capitalization             = pascal_case
-# Use PascalCase for constant fields  
+# Use PascalCase for constant fields
 dotnet_naming_rule.constant_fields_should_be_pascal_case.severity = suggestion
 dotnet_naming_rule.constant_fields_should_be_pascal_case.symbols  = constant_fields
 dotnet_naming_rule.constant_fields_should_be_pascal_case.style    = pascal_case_style
@@ -205,6 +212,7 @@ csharp_style_deconstructed_variable_declaration = true:suggestion
 csharp_prefer_simple_default_expression = true:suggestion
 csharp_style_pattern_local_over_anonymous_function = true:suggestion
 csharp_style_inlined_variable_declaration = true:suggestion
+csharp_style_namespace_declarations = file_scoped:suggestion
 ###############################
 # C# Formatting Rules         #
 ###############################

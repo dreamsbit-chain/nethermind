@@ -1,32 +1,17 @@
-//  Copyright (c) 2021 Demerzel Solutions Limited
-//  This file is part of the Nethermind library.
-// 
-//  The Nethermind library is free software: you can redistribute it and/or modify
-//  it under the terms of the GNU Lesser General Public License as published by
-//  the Free Software Foundation, either version 3 of the License, or
-//  (at your option) any later version.
-// 
-//  The Nethermind library is distributed in the hope that it will be useful,
-//  but WITHOUT ANY WARRANTY; without even the implied warranty of
-//  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-//  GNU Lesser General Public License for more details.
-// 
-//  You should have received a copy of the GNU Lesser General Public License
-//  along with the Nethermind. If not, see <http://www.gnu.org/licenses/>.
+// SPDX-FileCopyrightText: 2022 Demerzel Solutions Limited
+// SPDX-License-Identifier: LGPL-3.0-only
 
 using System;
 using System.Collections.Generic;
 using Nethermind.Blockchain;
 using Nethermind.Blockchain.Receipts;
+using Nethermind.Consensus;
 using Nethermind.Consensus.Processing;
 using Nethermind.Consensus.Rewards;
 using Nethermind.Consensus.Tracing;
 using Nethermind.Consensus.Validators;
-using Nethermind.Core;
 using Nethermind.Core.Specs;
 using Nethermind.Db;
-using Nethermind.Evm.TransactionProcessing;
-using Nethermind.JsonRpc.Data;
 using Nethermind.Logging;
 using Nethermind.Trie.Pruning;
 using Newtonsoft.Json;
@@ -44,7 +29,7 @@ namespace Nethermind.JsonRpc.Modules.Trace
         private readonly ILogManager _logManager;
         private readonly IBlockPreprocessorStep _recoveryStep;
         private readonly IRewardCalculatorSource _rewardCalculatorSource;
-        private ILogger _logger;
+        private readonly IPoSSwitcher _poSSwitcher;
 
         public TraceModuleFactory(
             IDbProvider dbProvider,
@@ -55,6 +40,7 @@ namespace Nethermind.JsonRpc.Modules.Trace
             IRewardCalculatorSource rewardCalculatorSource,
             IReceiptStorage receiptFinder,
             ISpecProvider specProvider,
+            IPoSSwitcher poSSwitcher,
             ILogManager logManager)
         {
             _dbProvider = dbProvider.AsReadOnly(false);
@@ -62,24 +48,28 @@ namespace Nethermind.JsonRpc.Modules.Trace
             _trieNodeResolver = trieNodeResolver;
             _jsonRpcConfig = jsonRpcConfig ?? throw new ArgumentNullException(nameof(jsonRpcConfig));
             _recoveryStep = recoveryStep ?? throw new ArgumentNullException(nameof(recoveryStep));
-            _rewardCalculatorSource =
-                rewardCalculatorSource ?? throw new ArgumentNullException(nameof(rewardCalculatorSource));
+            _rewardCalculatorSource = rewardCalculatorSource ?? throw new ArgumentNullException(nameof(rewardCalculatorSource));
             _receiptStorage = receiptFinder ?? throw new ArgumentNullException(nameof(receiptFinder));
             _specProvider = specProvider ?? throw new ArgumentNullException(nameof(specProvider));
+            _poSSwitcher = poSSwitcher ?? throw new ArgumentNullException(nameof(poSSwitcher));
             _logManager = logManager ?? throw new ArgumentNullException(nameof(logManager));
-            _logger = logManager.GetClassLogger();
+            logManager.GetClassLogger();
         }
 
         public override ITraceRpcModule Create()
         {
             ReadOnlyTxProcessingEnv txProcessingEnv =
                 new(_dbProvider, _trieNodeResolver, _blockTree, _specProvider, _logManager);
-            
-            IRewardCalculator rewardCalculator = _rewardCalculatorSource.Get(txProcessingEnv.TransactionProcessor);
+
+            IRewardCalculator rewardCalculator =
+                new MergeRpcRewardCalculator(_rewardCalculatorSource.Get(txProcessingEnv.TransactionProcessor),
+                    _poSSwitcher);
 
             RpcBlockTransactionsExecutor rpcBlockTransactionsExecutor = new(txProcessingEnv.TransactionProcessor, txProcessingEnv.StateProvider);
-            
-            ReadOnlyChainProcessingEnv chainProcessingEnv = new(
+            BlockProcessor.BlockValidationTransactionsExecutor executeBlockTransactionsExecutor = new(txProcessingEnv.TransactionProcessor,
+                txProcessingEnv.StateProvider);
+
+            ReadOnlyChainProcessingEnv CreateChainProcessingEnv(IBlockProcessor.IBlockTransactionsExecutor transactionsExecutor) => new(
                 txProcessingEnv,
                 Always.Valid,
                 _recoveryStep,
@@ -88,9 +78,12 @@ namespace Nethermind.JsonRpc.Modules.Trace
                 _dbProvider,
                 _specProvider,
                 _logManager,
-                rpcBlockTransactionsExecutor);
-            
-            Tracer tracer = new(chainProcessingEnv.StateProvider, chainProcessingEnv.ChainProcessor);
+                transactionsExecutor);
+
+            ReadOnlyChainProcessingEnv traceProcessingEnv = CreateChainProcessingEnv(rpcBlockTransactionsExecutor);
+            ReadOnlyChainProcessingEnv executeProcessingEnv = CreateChainProcessingEnv(executeBlockTransactionsExecutor);
+
+            Tracer tracer = new(txProcessingEnv.StateProvider, traceProcessingEnv.ChainProcessor, executeProcessingEnv.ChainProcessor);
 
             return new TraceRpcModule(_receiptStorage, tracer, _blockTree, _jsonRpcConfig, _specProvider, _logManager);
         }

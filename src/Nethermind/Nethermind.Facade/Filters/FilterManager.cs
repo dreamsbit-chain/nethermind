@@ -1,18 +1,5 @@
-//  Copyright (c) 2021 Demerzel Solutions Limited
-//  This file is part of the Nethermind library.
-// 
-//  The Nethermind library is free software: you can redistribute it and/or modify
-//  it under the terms of the GNU Lesser General Public License as published by
-//  the Free Software Foundation, either version 3 of the License, or
-//  (at your option) any later version.
-// 
-//  The Nethermind library is distributed in the hope that it will be useful,
-//  but WITHOUT ANY WARRANTY; without even the implied warranty of
-//  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-//  GNU Lesser General Public License for more details.
-// 
-//  You should have received a copy of the GNU Lesser General Public License
-//  along with the Nethermind. If not, see <http://www.gnu.org/licenses/>.
+// SPDX-FileCopyrightText: 2022 Demerzel Solutions Limited
+// SPDX-License-Identifier: LGPL-3.0-only
 
 using System;
 using System.Collections.Concurrent;
@@ -22,6 +9,7 @@ using Nethermind.Consensus.Processing;
 using Nethermind.Core;
 using Nethermind.Core.Attributes;
 using Nethermind.Core.Crypto;
+using Nethermind.Facade.Filters;
 using Nethermind.Logging;
 using Nethermind.TxPool;
 
@@ -91,7 +79,7 @@ namespace Nethermind.Blockchain.Filters
                 List<Keccak> transactions = _pendingTransactions.GetOrAdd(filterId, _ => new List<Keccak>());
                 transactions.Add(e.Transaction.Hash);
                 if (_logger.IsDebug) _logger.Debug($"Filter with id: '{filterId}' contains {transactions.Count} transactions.");
-                
+
             }
         }
 
@@ -105,7 +93,7 @@ namespace Nethermind.Blockchain.Filters
                 List<Keccak> transactions = _pendingTransactions.GetOrAdd(filterId, _ => new List<Keccak>());
                 transactions.Remove(e.Transaction.Hash);
                 if (_logger.IsDebug) _logger.Debug($"Filter with id: '{filterId}' contains {transactions.Count} transactions.");
-                
+
             }
         }
 
@@ -126,9 +114,9 @@ namespace Nethermind.Blockchain.Filters
         {
             if (!_blockHashes.TryGetValue(filterId, out var blockHashes))
             {
-                if (_lastBlockHash != null)
+                if (_lastBlockHash is not null)
                 {
-                    Keccak[] hackedResult = {_lastBlockHash}; // truffle hack
+                    Keccak[] hackedResult = { _lastBlockHash }; // truffle hack
                     _lastBlockHash = null;
                     return hackedResult;
                 }
@@ -168,37 +156,29 @@ namespace Nethermind.Blockchain.Filters
             return existingPendingTransactions;
         }
 
-        private void AddReceipts(params TxReceipt[] txReceipts)
+        private void AddReceipts(TxReceipt txReceipt)
         {
-            if (txReceipts == null)
+            if (txReceipt is null)
             {
-                throw new ArgumentNullException(nameof(txReceipts));
-            }
-
-            if (txReceipts.Length == 0)
-            {
-                return;
+                throw new ArgumentNullException(nameof(txReceipt));
             }
 
             IEnumerable<LogFilter> filters = _filterStore.GetFilters<LogFilter>();
             foreach (LogFilter filter in filters)
             {
-                for (int i = 0; i < txReceipts.Length; i++)
-                {
-                    StoreLogs(filter, txReceipts[i], ref _logIndex);
-                }
+                StoreLogs(filter, txReceipt, ref _logIndex);
             }
         }
 
         private void AddBlock(Block block)
         {
-            if (block == null)
+            if (block is null)
             {
                 throw new ArgumentNullException(nameof(block));
             }
 
             IEnumerable<BlockFilter> filters = _filterStore.GetFilters<BlockFilter>();
-            
+
             foreach (BlockFilter filter in filters)
             {
                 StoreBlock(filter, block);
@@ -207,7 +187,7 @@ namespace Nethermind.Blockchain.Filters
 
         private void StoreBlock(BlockFilter filter, Block block)
         {
-            if (block.Hash == null)
+            if (block.Hash is null)
             {
                 throw new InvalidOperationException("Cannot filter on blocks without calculated hashes");
             }
@@ -219,7 +199,7 @@ namespace Nethermind.Blockchain.Filters
 
         private void StoreLogs(LogFilter filter, TxReceipt txReceipt, ref long logIndex)
         {
-            if (txReceipt.Logs == null || txReceipt.Logs.Length == 0)
+            if (txReceipt.Logs is null || txReceipt.Logs.Length == 0)
             {
                 return;
             }
@@ -227,9 +207,9 @@ namespace Nethermind.Blockchain.Filters
             List<FilterLog> logs = _logs.GetOrAdd(filter.Id, i => new List<FilterLog>());
             for (int i = 0; i < txReceipt.Logs.Length; i++)
             {
-                var logEntry = txReceipt.Logs[i];
-                var filterLog = CreateLog(filter, txReceipt, logEntry, logIndex++, i);
-                if (!(filterLog is null))
+                LogEntry? logEntry = txReceipt.Logs[i];
+                FilterLog? filterLog = CreateLog(filter, txReceipt, logEntry, logIndex++, i);
+                if (filterLog is not null)
                 {
                     logs.Add(filterLog);
                 }
@@ -243,7 +223,7 @@ namespace Nethermind.Blockchain.Filters
             if (_logger.IsDebug) _logger.Debug($"Filter with id: '{filter.Id}' contains {logs.Count} logs.");
         }
 
-        private FilterLog CreateLog(LogFilter logFilter, TxReceipt txReceipt, LogEntry logEntry, long index, int transactionLogIndex)
+        private FilterLog? CreateLog(LogFilter logFilter, TxReceipt txReceipt, LogEntry logEntry, long index, int transactionLogIndex)
         {
             if (logFilter.FromBlock.Type == BlockParameterType.BlockNumber &&
                 logFilter.FromBlock.BlockNumber > txReceipt.BlockNumber)

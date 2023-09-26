@@ -1,18 +1,5 @@
-﻿//  Copyright (c) 2021 Demerzel Solutions Limited
-//  This file is part of the Nethermind library.
-// 
-//  The Nethermind library is free software: you can redistribute it and/or modify
-//  it under the terms of the GNU Lesser General Public License as published by
-//  the Free Software Foundation, either version 3 of the License, or
-//  (at your option) any later version.
-// 
-//  The Nethermind library is distributed in the hope that it will be useful,
-//  but WITHOUT ANY WARRANTY; without even the implied warranty of
-//  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-//  GNU Lesser General Public License for more details.
-// 
-//  You should have received a copy of the GNU Lesser General Public License
-//  along with the Nethermind. If not, see <http://www.gnu.org/licenses/>.
+// SPDX-FileCopyrightText: 2022 Demerzel Solutions Limited
+// SPDX-License-Identifier: LGPL-3.0-only
 
 using System;
 using System.Collections;
@@ -35,7 +22,7 @@ namespace Nethermind.Db.Blooms
         internal static readonly Keccak MaxBlockNumberKey = Keccak.Compute(nameof(MaxBlockNumber));
         private static readonly Keccak MigrationBlockNumberKey = Keccak.Compute(nameof(MigratedBlockNumber));
         private static readonly Keccak LevelsKey = Keccak.Compute(nameof(LevelsKey));
-        
+
         private readonly BloomStorageLevel[] _storageLevels;
         private readonly IBloomConfig _config;
         private readonly IDb _bloomInfoDb;
@@ -77,12 +64,12 @@ namespace Nethermind.Db.Blooms
         public BloomStorage(IBloomConfig config, IDb bloomDb, IFileStoreFactory fileStoreFactory)
         {
             long Get(Keccak key, long defaultValue) => bloomDb.Get(key)?.ToLongFromBigEndianByteArrayWithoutLeadingZeros() ?? defaultValue;
-            
+
             _config = config ?? throw new ArgumentNullException(nameof(config));
             _bloomInfoDb = bloomDb ?? throw new ArgumentNullException(nameof(_bloomInfoDb));
             _fileStoreFactory = fileStoreFactory;
             _storageLevels = CreateStorageLevels(config);
-            Levels = (byte) _storageLevels.Length;
+            Levels = (byte)_storageLevels.Length;
             _minBlockNumber = Get(MinBlockNumberKey, long.MaxValue);
             _maxBlockNumber = Get(MaxBlockNumberKey, -1);
             _migratedBlockNumber = Get(MigrationBlockNumberKey, -1);
@@ -97,7 +84,7 @@ namespace Nethermind.Db.Blooms
                     throw new ArgumentException($"Can not create bloom index when there are no {nameof(config.IndexLevelBucketSizes)} provided.", nameof(config.IndexLevelBucketSizes));
                 }
             }
-            
+
             List<int> InsertBaseLevelIfNeeded()
             {
                 List<int> sizes = config.IndexLevelBucketSizes.ToList();
@@ -108,12 +95,12 @@ namespace Nethermind.Db.Blooms
 
                 return sizes;
             }
-            
+
             void ValidateCurrentDbStructure(IList<int> sizes)
             {
                 var levelsFromDb = _bloomInfoDb.Get(LevelsKey);
 
-                if (levelsFromDb == null)
+                if (levelsFromDb is null)
                 {
                     _bloomInfoDb.Set(LevelsKey, Rlp.Encode(sizes.ToArray()).Bytes);
                 }
@@ -138,7 +125,7 @@ namespace Nethermind.Db.Blooms
             return configIndexLevelBucketSizes
                 .Select((size, i) =>
                 {
-                    byte level = (byte) (configIndexLevelBucketSizes.Count - i - 1);
+                    byte level = (byte)(configIndexLevelBucketSizes.Count - i - 1);
                     var levelElementSize = lastLevelSize * size;
                     lastLevelSize = levelElementSize;
                     return new BloomStorageLevel(_fileStoreFactory.Create(level.ToString()), level, levelElementSize, size, _config.MigrationStatistics);
@@ -148,7 +135,7 @@ namespace Nethermind.Db.Blooms
         }
 
         private bool Contains(long blockNumber) => blockNumber >= MinBlockNumber && blockNumber <= MaxBlockNumber;
-        
+
         public bool ContainsRange(in long fromBlockNumber, in long toBlockNumber) => Contains(fromBlockNumber) && Contains(toBlockNumber);
 
         public IEnumerable<Average> Averages => _storageLevels.Select(l => l.Average);
@@ -173,31 +160,31 @@ namespace Nethermind.Db.Blooms
 
         public void Migrate(IEnumerable<BlockHeader> headers)
         {
-            var batchSize =_storageLevels.First().LevelElementSize;
+            var batchSize = _storageLevels.First().LevelElementSize;
             (BloomStorageLevel Level, Bloom Bloom)[] levelBlooms = _storageLevels.SkipLast(1).Select(l => (l, new Bloom())).ToArray();
             BloomStorageLevel lastLevel = _storageLevels.Last();
-            
+
             long i = 0;
             long lastBlockNumber = -1;
-            
-            foreach (var blockHeader in headers)
+
+            foreach (BlockHeader blockHeader in headers)
             {
                 i++;
 
-                var blockHeaderBloom = blockHeader.Bloom ?? Bloom.Empty;
+                Bloom blockHeaderBloom = blockHeader.Bloom ?? Bloom.Empty;
                 lastLevel.Migrate(blockHeader.Number, blockHeaderBloom);
-                
-                for (var index = 0; index < levelBlooms.Length; index++)
-                {
-                    var levelBloom = levelBlooms[index];
-                    levelBloom.Bloom.Accumulate(blockHeaderBloom);
-                    
-                    if (i % levelBloom.Level.LevelElementSize == 0)
-                    {
-                        levelBloom.Level.Migrate(blockHeader.Number, levelBloom.Bloom);
-                        levelBlooms[index] = (levelBloom.Level, new Bloom());
 
-                        if (levelBloom.Level.LevelElementSize == batchSize)
+                for (int index = 0; index < levelBlooms.Length; index++)
+                {
+                    (BloomStorageLevel level, Bloom bloom) = levelBlooms[index];
+                    bloom.Accumulate(blockHeaderBloom);
+
+                    if (i % level.LevelElementSize == 0)
+                    {
+                        level.Migrate(blockHeader.Number, bloom);
+                        levelBlooms[index] = (level, new Bloom());
+
+                        if (level.LevelElementSize == batchSize)
                         {
                             MigratedBlockNumber += batchSize;
                         }
@@ -209,12 +196,12 @@ namespace Nethermind.Db.Blooms
 
             if (i % batchSize != 0)
             {
-                for (var index = 0; index < levelBlooms.Length; index++)
+                for (int index = 0; index < levelBlooms.Length; index++)
                 {
-                    var levelBloom = levelBlooms[index];
-                    levelBloom.Level.Store(lastBlockNumber, levelBloom.Bloom);
+                    (BloomStorageLevel level, Bloom bloom) = levelBlooms[index];
+                    level.Store(lastBlockNumber, bloom);
                 }
-                
+
                 MigratedBlockNumber += i;
             }
 
@@ -241,15 +228,17 @@ namespace Nethermind.Db.Blooms
 
         private class BloomStorageLevel : IDisposable
         {
-            public readonly byte Level;
+            // ReSharper disable InconsistentNaming
+            private readonly byte Level;
             public readonly int LevelElementSize;
-            public readonly int LevelMultiplier;
+            private readonly int LevelMultiplier;
             public readonly Average Average = new();
-            
+            // ReSharper restore InconsistentNaming
+
             private readonly IFileStore _fileStore;
             private readonly bool _migrationStatistics;
-            private readonly ICache<long, Bloom> _cache;
-            
+            private readonly LruCache<long, Bloom> _cache;
+
             public BloomStorageLevel(IFileStore fileStore, in byte level, in int levelElementSize, in int levelMultiplier, bool migrationStatistics)
             {
                 _fileStore = fileStore;
@@ -264,24 +253,36 @@ namespace Nethermind.Db.Blooms
             {
                 long bucket = GetBucket(blockNumber);
 
-                lock (_fileStore)
+                try
                 {
-                    var existingBloom = _cache.Get(bucket);
-                    if (existingBloom == null)
+                    lock (_fileStore)
                     {
-                        byte[] bytes = new byte[Bloom.ByteLength];
-                        var bytesRead = _fileStore.Read(bucket, bytes);
-                        var bloomRead = bytesRead == Bloom.ByteLength;
-                        existingBloom = bloomRead ? new Bloom(bytes) : new Bloom();
+                        Bloom? existingBloom = _cache.Get(bucket);
+                        if (existingBloom is null)
+                        {
+                            byte[] bytes = new byte[Bloom.ByteLength];
+                            int bytesRead = _fileStore.Read(bucket, bytes);
+                            bool bloomRead = bytesRead == Bloom.ByteLength;
+                            existingBloom = bloomRead ? new Bloom(bytes) : new Bloom();
+                        }
+
+                        existingBloom.Accumulate(bloom);
+
+                        _fileStore.Write(bucket, existingBloom.Bytes);
+                        _cache.Set(bucket, existingBloom);
                     }
+                }
+                catch (InvalidOperationException e)
+                {
+                    InvalidOperationException exception = new(e.Message + $" Trying to write bloom index for block {blockNumber} at bucket {bucket}", e)
+                    {
+                        Data = { { "Bucket", bucket }, { "Block", blockNumber } }
+                    };
 
-                    existingBloom.Accumulate(bloom);
-
-                    _fileStore.Write(bucket, existingBloom.Bytes);
-                    _cache.Set(bucket, existingBloom);
+                    throw exception;
                 }
             }
-            
+
             private static uint CountBits(Bloom bloom) => bloom.Bytes.AsSpan().CountBits();
 
             public long GetBucket(long blockNumber) => blockNumber / LevelElementSize;
@@ -294,7 +295,7 @@ namespace Nethermind.Db.Blooms
                 {
                     Average.Increment(CountBits(bloom));
                 }
-                        
+
                 _fileStore.Write(GetBucket(blockNumber), bloom.Bytes);
             }
 
@@ -303,7 +304,7 @@ namespace Nethermind.Db.Blooms
                 _fileStore?.Dispose();
             }
         }
-        
+
         private class BloomEnumeration : IBloomEnumeration
         {
             private readonly BloomStorageLevel[] _storageLevels;
@@ -317,7 +318,7 @@ namespace Nethermind.Db.Blooms
                 _fromBlock = fromBlock;
                 _toBlock = toBlock;
             }
-            
+
             public IEnumerator<Bloom> GetEnumerator() => _current = new BloomEnumerator(_storageLevels, _fromBlock, _toBlock);
 
             IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
@@ -327,7 +328,7 @@ namespace Nethermind.Db.Blooms
 
             public override string ToString() => _current.ToString();
         }
-        
+
         private class BloomEnumerator : IEnumerator<Bloom>
         {
             private readonly (BloomStorageLevel Storage, IFileReader Reader)[] _storageLevels;
@@ -336,7 +337,7 @@ namespace Nethermind.Db.Blooms
             private readonly int _maxLevel;
             private long _currentPosition;
             private readonly Bloom _bloom = new();
-            
+
             private byte CurrentLevel
             {
                 get => _currentLevel;
@@ -365,21 +366,21 @@ namespace Nethermind.Db.Blooms
                 IList<BloomStorageLevel> levels = new List<BloomStorageLevel>(storageLevels.Length);
                 for (int i = 0; i < storageLevels.Length; i++)
                 {
-                    var level = storageLevels[i];
+                    BloomStorageLevel level = storageLevels[i];
 
                     if (i != storageLevels.Length - 1)
                     {
-                        var fromBucket = level.GetBucket(fromBlock);
-                        var toBucket = level.GetBucket(toBlock);
+                        long fromBucket = level.GetBucket(fromBlock);
+                        long toBucket = level.GetBucket(toBlock);
                         if (toBucket - fromBucket + 1 <= 2)
                         {
                             continue;
                         }
                     }
-                    
+
                     levels.Add(level);
                 }
-                
+
                 return levels.Select(l => (l, l.CreateReader())).AsParallel().ToArray();
             }
 
@@ -395,11 +396,11 @@ namespace Nethermind.Db.Blooms
             {
                 if (_currentLevelRead)
                 {
-                    var currentStorageLevel = _storageLevels[CurrentLevel].Storage;
+                    BloomStorageLevel currentStorageLevel = _storageLevels[CurrentLevel].Storage;
                     _currentPosition += _currentPosition == _fromBlock
                         ? currentStorageLevel.LevelElementSize - _currentPosition % currentStorageLevel.LevelElementSize
                         : currentStorageLevel.LevelElementSize;
-                    
+
                     while (CurrentLevel > 0 && _currentPosition % _storageLevels[CurrentLevel - 1].Storage.LevelElementSize == 0)
                     {
                         CurrentLevel--;
@@ -431,8 +432,8 @@ namespace Nethermind.Db.Blooms
             {
                 get
                 {
-                    var level = _storageLevels[_currentLevel].Storage;
-                    var bucket = level.GetBucket(_currentPosition);
+                    BloomStorageLevel level = _storageLevels[_currentLevel].Storage;
+                    long bucket = level.GetBucket(_currentPosition);
                     return (bucket * level.LevelElementSize, (bucket + 1) * level.LevelElementSize - 1);
                 }
             }
@@ -448,18 +449,18 @@ namespace Nethermind.Db.Blooms
                 CurrentLevel++;
                 return false;
             }
-            
+
             public void Dispose()
-            { 
+            {
                 foreach (var storageLevel in _storageLevels)
                 {
                     storageLevel.Reader.Dispose();
-                }  
+                }
             }
 
             public override string ToString()
             {
-                var indices = CurrentIndices;
+                (long FromBlock, long ToBlock) indices = CurrentIndices;
                 return $"From: {_fromBlock}, To: {_toBlock}, MaxLevel {_maxLevel}, CurrentBloom {indices.FromBlock}...{indices.ToBlock}, CurrentLevelSize {indices.ToBlock - indices.FromBlock + 1} CurrentLevel {CurrentLevel}, LevelRead {_currentLevelRead}";
             }
         }

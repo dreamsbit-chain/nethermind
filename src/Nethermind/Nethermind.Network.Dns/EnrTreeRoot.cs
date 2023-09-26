@@ -1,19 +1,5 @@
-﻿//  Copyright (c) 2021 Demerzel Solutions Limited
-//  This file is part of the Nethermind library.
-// 
-//  The Nethermind library is free software: you can redistribute it and/or modify
-//  it under the terms of the GNU Lesser General Public License as published by
-//  the Free Software Foundation, either version 3 of the License, or
-//  (at your option) any later version.
-// 
-//  The Nethermind library is distributed in the hope that it will be useful,
-//  but WITHOUT ANY WARRANTY; without even the implied warranty of
-//  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-//  GNU Lesser General Public License for more details.
-// 
-//  You should have received a copy of the GNU Lesser General Public License
-//  along with the Nethermind. If not, see <http://www.gnu.org/licenses/>.
-// 
+// SPDX-FileCopyrightText: 2022 Demerzel Solutions Limited
+// SPDX-License-Identifier: LGPL-3.0-only
 
 namespace Nethermind.Network.Dns;
 
@@ -26,12 +12,12 @@ public class EnrTreeRoot : EnrTreeNode
     /// <summary>
     /// the root hashes of subtrees containing nodes and links subtrees
     /// </summary>
-    public string EnrRoot { get; set; }
+    public string EnrRoot { get; set; } = string.Empty;
 
     /// <summary>
     /// the root hashes of subtrees containing nodes and links subtrees
     /// </summary>
-    public string LinkRoot { get; set; }
+    public string LinkRoot { get; set; } = string.Empty;
 
     /// <summary>
     /// Updated each time the tree gets updated.
@@ -41,7 +27,7 @@ public class EnrTreeRoot : EnrTreeNode
     /// <summary>
     /// Signature but need to learn where to take the public key from
     /// </summary>
-    public string Signature { get; set; }
+    public string Signature { get; set; } = string.Empty;
 
     public override string ToString()
     {
@@ -57,6 +43,6 @@ public class EnrTreeRoot : EnrTreeNode
     }
 
     public override string[] Links => Array.Empty<string>();
-    
+
     public override string[] Records => Array.Empty<string>();
 }

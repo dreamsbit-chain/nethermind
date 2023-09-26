@@ -1,26 +1,11 @@
-//  Copyright (c) 2021 Demerzel Solutions Limited
-//  This file is part of the Nethermind library.
-// 
-//  The Nethermind library is free software: you can redistribute it and/or modify
-//  it under the terms of the GNU Lesser General Public License as published by
-//  the Free Software Foundation, either version 3 of the License, or
-//  (at your option) any later version.
-// 
-//  The Nethermind library is distributed in the hope that it will be useful,
-//  but WITHOUT ANY WARRANTY; without even the implied warranty of
-//  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-//  GNU Lesser General Public License for more details.
-// 
-//  You should have received a copy of the GNU Lesser General Public License
-//  along with the Nethermind. If not, see <http://www.gnu.org/licenses/>.
+// SPDX-FileCopyrightText: 2022 Demerzel Solutions Limited
+// SPDX-License-Identifier: LGPL-3.0-only
 
 using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
 using Nethermind.Config;
-using Nethermind.Core;
 using Nethermind.Core.Crypto;
 using Nethermind.Logging;
-using Nethermind.Network.Config;
 using Nethermind.Network.Discovery.Lifecycle;
 using Nethermind.Network.Discovery.Messages;
 using Nethermind.Network.Discovery.RoutingTable;
@@ -69,18 +54,9 @@ public class DiscoveryManager : IDiscoveryManager
 
             Node node = new(msg.FarPublicKey, msg.FarAddress);
             INodeLifecycleManager? nodeManager = GetNodeLifecycleManager(node);
-            if (nodeManager == null)
+            if (nodeManager is null)
             {
                 return;
-            }
-
-            if (msg is PingMsg pingMsg)
-            {
-                if (NetworkDiagTracer.IsEnabled) NetworkDiagTracer.ReportIncomingMessage(pingMsg.FarAddress, "MANAGER disc v4", $"Ping {pingMsg.SourceAddress?.Address} -> {pingMsg.DestinationAddress?.Address}");
-            }
-            else
-            {
-                if (NetworkDiagTracer.IsEnabled) NetworkDiagTracer.ReportIncomingMessage(msg.FarAddress, "MANAGER disc v4", msg.MsgType.ToString());
             }
 
             switch (msgType)
@@ -129,7 +105,7 @@ public class DiscoveryManager : IDiscoveryManager
         {
             return null;
         }
-        
+
         if (_nodeTable.MasterNode.Equals(node))
         {
             return null;
@@ -148,7 +124,7 @@ public class DiscoveryManager : IDiscoveryManager
             manager.OnStateChanged += ManagerOnOnStateChanged;
             if (!isPersisted)
             {
-                _discoveryStorage.UpdateNodes(new[] { new NetworkNode(manager.ManagedNode.Id, manager.ManagedNode.Host, manager.ManagedNode.Port, manager.NodeStats.NewPersistedNodeReputation) });
+                _discoveryStorage.UpdateNodes(new[] { new NetworkNode(manager.ManagedNode.Id, manager.ManagedNode.Host, manager.ManagedNode.Port, manager.NodeStats.NewPersistedNodeReputation(DateTime.UtcNow)) });
             }
 
             return manager;
@@ -172,15 +148,6 @@ public class DiscoveryManager : IDiscoveryManager
         if (_logger.IsTrace) _logger.Trace($"Sending msg: {discoveryMsg}");
         try
         {
-            if (discoveryMsg is PingMsg pingMessage)
-            {
-                if (NetworkDiagTracer.IsEnabled) NetworkDiagTracer.ReportOutgoingMessage(pingMessage.FarAddress, "HANDLER disc v4", $"Ping {pingMessage.SourceAddress?.Address} -> {pingMessage.DestinationAddress?.Address}");
-            }
-            else
-            {
-                if (NetworkDiagTracer.IsEnabled) NetworkDiagTracer.ReportOutgoingMessage(discoveryMsg.FarAddress, "HANDLER disc v4", discoveryMsg.MsgType.ToString());
-            }
-
             _msgSender?.SendMsg(discoveryMsg);
         }
         catch (Exception e)
@@ -222,20 +189,20 @@ public class DiscoveryManager : IDiscoveryManager
 
     private bool ValidatePingAddress(PingMsg msg)
     {
-        if (msg.DestinationAddress == null || msg.FarAddress == null)
+        if (msg.DestinationAddress is null || msg.FarAddress is null)
         {
             if (_logger.IsDebug) _logger.Debug($"Received a ping message with empty address, message: {msg}");
             return false;
         }
 
-        #region 
+        #region
         // port will be different as we dynamically open ports for each socket connection
         // if (_nodeTable.MasterNode.Port != message.DestinationAddress?.Port)
         // {
         //     throw new NetworkingException($"Received message with incorrect destination port, message: {message}", NetworkExceptionType.Discovery);
         // }
 
-        // either an old Nethermind or other nodes that make the same mistake 
+        // either an old Nethermind or other nodes that make the same mistake
         // if (!Bytes.AreEqual(message.FarAddress?.Address.MapToIPv6().GetAddressBytes(), message.SourceAddress?.Address.MapToIPv6().GetAddressBytes()))
         // {
         //     // there is no sense to complain here as nodes sent a lot of garbage as their source addresses
@@ -261,7 +228,7 @@ public class DiscoveryManager : IDiscoveryManager
     private TaskCompletionSource<DiscoveryMsg> GetCompletionSource(Keccak senderAddressHash, int messageType)
     {
         MessageTypeKey key = new(senderAddressHash, messageType);
-        TaskCompletionSource<DiscoveryMsg> completionSource = _waitingEvents.GetOrAdd(key, new TaskCompletionSource<DiscoveryMsg>());
+        TaskCompletionSource<DiscoveryMsg> completionSource = _waitingEvents.GetOrAdd(key, new TaskCompletionSource<DiscoveryMsg>(TaskCreationOptions.RunContinuationsAsynchronously));
         return completionSource;
     }
 
@@ -274,7 +241,7 @@ public class DiscoveryManager : IDiscoveryManager
     private void CleanUpLifecycleManagers()
     {
         int toRemove = (_nodeLifecycleManagers.Count - _discoveryConfig.MaxNodeLifecycleManagersCount) + _discoveryConfig.NodeLifecycleManagersCleanupCount;
-        if(toRemove <= _discoveryConfig.NodeLifecycleManagersCleanupCount / 2)
+        if (toRemove <= _discoveryConfig.NodeLifecycleManagersCleanupCount / 2)
         {
             return;
         }
@@ -289,7 +256,7 @@ public class DiscoveryManager : IDiscoveryManager
                     remainingToRemove--;
                     if (remainingToRemove <= 0)
                     {
-                        if(_logger.IsDebug) _logger.Debug($"Cleaned up {toRemove} discovery lifecycle managers.");
+                        if (_logger.IsDebug) _logger.Debug($"Cleaned up {toRemove} discovery lifecycle managers.");
                         return;
                     }
                 }
@@ -305,28 +272,28 @@ public class DiscoveryManager : IDiscoveryManager
                     remainingToRemove--;
                     if (remainingToRemove <= 0)
                     {
-                        if(_logger.IsDebug) _logger.Debug($"Cleaned up {toRemove} discovery lifecycle managers.");
+                        if (_logger.IsDebug) _logger.Debug($"Cleaned up {toRemove} discovery lifecycle managers.");
                         return;
                     }
                 }
             }
         }
-
+        DateTime utcNow = DateTime.UtcNow;
         foreach ((Keccak key, INodeLifecycleManager value) in _nodeLifecycleManagers.ToArray()
-                     .OrderBy(x => x.Value.NodeStats.CurrentNodeReputation))
+                     .OrderBy(x => x.Value.NodeStats.CurrentNodeReputation(utcNow)))
         {
             if (RemoveManager((key, value.ManagedNode.Id)))
             {
                 remainingToRemove--;
                 if (remainingToRemove <= 0)
                 {
-                    if(_logger.IsDebug) _logger.Debug($"Cleaned up {toRemove} discovery lifecycle managers.");
+                    if (_logger.IsDebug) _logger.Debug($"Cleaned up {toRemove} discovery lifecycle managers.");
                     return;
                 }
             }
         }
 
-        if(_logger.IsDebug) _logger.Debug($"Cleaned up {toRemove - remainingToRemove} discovery lifecycle managers.");
+        if (_logger.IsDebug) _logger.Debug($"Cleaned up {toRemove - remainingToRemove} discovery lifecycle managers.");
     }
 
     private bool RemoveManager((Keccak Hash, PublicKey Key) item)
@@ -343,7 +310,7 @@ public class DiscoveryManager : IDiscoveryManager
     private readonly struct MessageTypeKey : IEquatable<MessageTypeKey>
     {
         public Keccak SenderAddressHash { get; }
-        
+
         public int MessageType { get; }
 
         public MessageTypeKey(Keccak senderAddressHash, int messageType)
@@ -368,7 +335,7 @@ public class DiscoveryManager : IDiscoveryManager
         {
             unchecked
             {
-                return ((SenderAddressHash != null ? SenderAddressHash.GetHashCode() : 0) * 397) ^ MessageType;
+                return ((SenderAddressHash is not null ? SenderAddressHash.GetHashCode() : 0) * 397) ^ MessageType;
             }
         }
     }

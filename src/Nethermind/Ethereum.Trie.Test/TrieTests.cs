@@ -1,20 +1,5 @@
-﻿/*
- * Copyright (c) 2021 Demerzel Solutions Limited
- * This file is part of the Nethermind library.
- *
- * The Nethermind library is free software: you can redistribute it and/or modify
- * it under the terms of the GNU Lesser General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * The Nethermind library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with the Nethermind. If not, see <http://www.gnu.org/licenses/>.
- */
+// SPDX-FileCopyrightText: 2022 Demerzel Solutions Limited
+// SPDX-License-Identifier: LGPL-3.0-only
 
 using System;
 using System.Collections.Generic;
@@ -25,7 +10,6 @@ using Nethermind.Core.Crypto;
 using Nethermind.Core.Extensions;
 using Nethermind.Db;
 using Nethermind.Logging;
-using Nethermind.State;
 using Nethermind.Trie;
 using NUnit.Framework;
 
@@ -119,7 +103,7 @@ namespace Ethereum.Trie.Test
         [TestCaseSource(nameof(LoadAnyOrderTests))]
         public void Test_any_order(TrieTest test)
         {
-            RunTest(test, false);    
+            RunTest(test, false);
         }
 
         [TestCaseSource(nameof(LoadAnyOrderSecureTests))]
@@ -141,7 +125,7 @@ namespace Ethereum.Trie.Test
                 // removed the implementation of secure trie as it was not used outside of tests
                 return;
             }
-            
+
             string permutationDescription =
                 string.Join(Environment.NewLine, test.Input.Select(p => $"{p.Key} -> {p.Value}"));
 
@@ -167,7 +151,7 @@ namespace Ethereum.Trie.Test
             }
 
             patriciaTree.UpdateRootHash();
-            Assert.AreEqual(test.ExpectedRoot, patriciaTree.RootHash.ToString());
+            Assert.That(patriciaTree.RootHash.ToString(), Is.EqualTo(test.ExpectedRoot));
         }
 
         public string Surrounded(string text)
@@ -310,7 +294,7 @@ namespace Ethereum.Trie.Test
         public void Quick_empty()
         {
             PatriciaTree patriciaTree = new PatriciaTree(_db, Keccak.EmptyTreeHash, false, true, NullLogManager.Instance);
-            Assert.AreEqual(PatriciaTree.EmptyTreeHash, patriciaTree.RootHash);
+            Assert.That(patriciaTree.RootHash, Is.EqualTo(PatriciaTree.EmptyTreeHash));
         }
 
         [Test]
@@ -319,7 +303,7 @@ namespace Ethereum.Trie.Test
             PatriciaTree patriciaTree = new PatriciaTree(_db, Keccak.EmptyTreeHash, false, true, NullLogManager.Instance);
             patriciaTree.Set(Keccak.Compute("1").Bytes, new byte[0]);
             patriciaTree.Commit(0);
-            Assert.AreEqual(PatriciaTree.EmptyTreeHash, patriciaTree.RootHash);
+            Assert.That(patriciaTree.RootHash, Is.EqualTo(PatriciaTree.EmptyTreeHash));
         }
 
         [Test]
@@ -330,7 +314,7 @@ namespace Ethereum.Trie.Test
             patriciaTree.Set(Keccak.Compute("1124").Bytes, new byte[] { 2 });
             Keccak rootBefore = patriciaTree.RootHash;
             patriciaTree.Set(Keccak.Compute("1125").Bytes, new byte[0]);
-            Assert.AreEqual(rootBefore, patriciaTree.RootHash);
+            Assert.That(patriciaTree.RootHash, Is.EqualTo(rootBefore));
         }
 
         [Test]
@@ -343,7 +327,7 @@ namespace Ethereum.Trie.Test
             Keccak rootBefore = patriciaTree.RootHash;
             patriciaTree.Set(new Nibble[] { 1, 2, 3 }.ToPackedByteArray(), new byte[] { });
             patriciaTree.UpdateRootHash();
-            Assert.AreEqual(rootBefore, patriciaTree.RootHash);
+            Assert.That(patriciaTree.RootHash, Is.EqualTo(rootBefore));
         }
 
         [Test]
@@ -356,16 +340,16 @@ namespace Ethereum.Trie.Test
             Keccak rootBefore = patriciaTree.RootHash;
             patriciaTree.Set(Keccak.Compute("1234502").Bytes, new byte[0]);
             patriciaTree.UpdateRootHash();
-            Assert.AreEqual(rootBefore, patriciaTree.RootHash);
+            Assert.That(patriciaTree.RootHash, Is.EqualTo(rootBefore));
         }
 
         [Test]
         public void Lookup_in_empty_tree()
         {
             PatriciaTree tree = new PatriciaTree(new MemDb(), Keccak.EmptyTreeHash, false, true, NullLogManager.Instance);
-            Assert.AreEqual(tree.RootRef, null);
+            Assert.That(tree.RootRef, Is.Null);
             tree.Get(new byte[] { 1 });
-            Assert.AreEqual(tree.RootRef, null);
+            Assert.That(tree.RootRef, Is.Null);
         }
 
         public class TrieTestJson

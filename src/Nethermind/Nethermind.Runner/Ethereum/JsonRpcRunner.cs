@@ -1,21 +1,7 @@
-﻿//  Copyright (c) 2021 Demerzel Solutions Limited
-//  This file is part of the Nethermind library.
-// 
-//  The Nethermind library is free software: you can redistribute it and/or modify
-//  it under the terms of the GNU Lesser General Public License as published by
-//  the Free Software Foundation, either version 3 of the License, or
-//  (at your option) any later version.
-// 
-//  The Nethermind library is distributed in the hope that it will be useful,
-//  but WITHOUT ANY WARRANTY; without even the implied warranty of
-//  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-//  GNU Lesser General Public License for more details.
-// 
-//  You should have received a copy of the GNU Lesser General Public License
-//  along with the Nethermind. If not, see <http://www.gnu.org/licenses/>.
+// SPDX-FileCopyrightText: 2022 Demerzel Solutions Limited
+// SPDX-License-Identifier: LGPL-3.0-only
 
 using System;
-using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -27,6 +13,7 @@ using Nethermind.Api;
 using Nethermind.Api.Extensions;
 using Nethermind.Config;
 using Nethermind.Core;
+using Nethermind.Core.Authentication;
 using Nethermind.JsonRpc;
 using Nethermind.Logging;
 using Nethermind.Runner.JsonRpc;
@@ -41,6 +28,7 @@ namespace Nethermind.Runner.Ethereum
     {
         private readonly ILogger _logger;
         private readonly IConfigProvider _configurationProvider;
+        private readonly IRpcAuthentication _rpcAuthentication;
         private readonly ILogManager _logManager;
         private readonly IJsonRpcProcessor _jsonRpcProcessor;
         private readonly IJsonRpcUrlCollection _jsonRpcUrlCollection;
@@ -55,12 +43,14 @@ namespace Nethermind.Runner.Ethereum
             IJsonRpcUrlCollection jsonRpcUrlCollection,
             IWebSocketsManager webSocketsManager,
             IConfigProvider configurationProvider,
+            IRpcAuthentication rpcAuthentication,
             ILogManager logManager,
             INethermindApi api)
         {
             _jsonRpcConfig = configurationProvider.GetConfig<IJsonRpcConfig>();
             _initConfig = configurationProvider.GetConfig<IInitConfig>();
             _configurationProvider = configurationProvider;
+            _rpcAuthentication = rpcAuthentication;
             _jsonRpcUrlCollection = jsonRpcUrlCollection;
             _logManager = logManager;
             _jsonRpcProcessor = jsonRpcProcessor;
@@ -80,7 +70,8 @@ namespace Nethermind.Runner.Ethereum
                     s.AddSingleton(_jsonRpcProcessor);
                     s.AddSingleton(_jsonRpcUrlCollection);
                     s.AddSingleton(_webSocketsManager);
-                    foreach(var plugin in _api.Plugins.OfType<INethermindServicesPlugin>()) 
+                    s.AddSingleton(_rpcAuthentication);
+                    foreach (var plugin in _api.Plugins.OfType<INethermindServicesPlugin>())
                     {
                         plugin.AddServices(s);
                     };
@@ -94,10 +85,10 @@ namespace Nethermind.Runner.Ethereum
                     logging.AddProvider(new CustomMicrosoftLoggerProvider(_logManager));
                 })
                 .Build();
-            
+
             string urlsString = string.Join(" ; ", urls);
             // TODO: replace http with ws where relevant
-            
+
             ThisNodeInfo.AddInfo("JSON RPC     :", $"{urlsString}");
 
             _webHost = webHost;
@@ -116,11 +107,11 @@ namespace Nethermind.Runner.Ethereum
             try
             {
                 await (_webHost?.StopAsync() ?? Task.CompletedTask);
-                if(_logger.IsInfo) _logger.Info("JSON RPC service stopped");
+                if (_logger.IsInfo) _logger.Info("JSON RPC service stopped");
             }
             catch (Exception e)
             {
-                if(_logger.IsInfo) _logger.Info($"Error when stopping JSON RPC service: {e}");
+                if (_logger.IsInfo) _logger.Info($"Error when stopping JSON RPC service: {e}");
             }
         }
     }

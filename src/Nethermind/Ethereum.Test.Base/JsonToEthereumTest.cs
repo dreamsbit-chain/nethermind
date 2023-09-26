@@ -1,25 +1,11 @@
-/*
- * Copyright (c) 2021 Demerzel Solutions Limited
- * This file is part of the Nethermind library.
- *
- * The Nethermind library is free software: you can redistribute it and/or modify
- * it under the terms of the GNU Lesser General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * The Nethermind library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with the Nethermind. If not, see <http://www.gnu.org/licenses/>.
- */
+// SPDX-FileCopyrightText: 2022 Demerzel Solutions Limited
+// SPDX-License-Identifier: LGPL-3.0-only
 
 using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using Nethermind.Config;
 using Nethermind.Core;
 using Nethermind.Core.Crypto;
 using Nethermind.Core.Eip2930;
@@ -40,7 +26,20 @@ namespace Ethereum.Test.Base
             network = network.Replace("EIP150", "TangerineWhistle");
             network = network.Replace("EIP158", "SpuriousDragon");
             network = network.Replace("DAO", "Dao");
-
+            network = network.Replace("Merged", "GrayGlacier");
+            network = network.Replace("Merge", "GrayGlacier");
+            network = network.Replace("London+3540+3670", "Shanghai");
+            network = network.Replace("GrayGlacier+3540+3670", "Shanghai");
+            network = network.Replace("GrayGlacier+3860", "Shanghai");
+            network = network.Replace("GrayGlacier+3855", "Shanghai");
+            network = network.Replace("Merge+3540+3670", "Shanghai");
+            network = network.Replace("Shanghai+3855", "Shanghai");
+            network = network.Replace("Shanghai+3860", "Shanghai");
+            network = network.Replace("GrayGlacier+1153", "Cancun");
+            network = network.Replace("Merge+1153", "Cancun");
+            network = network.Replace("Shanghai+6780", "Cancun");
+            network = network.Replace("GrayGlacier+1153", "Cancun");
+            network = network.Replace("Merge+1153", "Cancun");
             return network switch
             {
                 "Frontier" => Frontier.Instance,
@@ -56,8 +55,30 @@ namespace Ethereum.Test.Base
                 "Istanbul" => Istanbul.Instance,
                 "Berlin" => Berlin.Instance,
                 "London" => London.Instance,
+                "GrayGlacier" => GrayGlacier.Instance,
+                "Shanghai" => Shanghai.Instance,
+                "Cancun" => Cancun.Instance,
                 _ => throw new NotSupportedException()
             };
+        }
+
+        private static ForkActivation TransitionForkActivation(string transitionInfo)
+        {
+            const string timestampPrefix = "Time";
+            const char kSuffix = 'k';
+            if (!transitionInfo.StartsWith(timestampPrefix))
+            {
+                return new ForkActivation(int.Parse(transitionInfo));
+            }
+
+            transitionInfo = transitionInfo.Remove(0, timestampPrefix.Length);
+            if (!transitionInfo.EndsWith(kSuffix))
+            {
+                return ForkActivation.TimestampOnly(ulong.Parse(transitionInfo));
+            }
+
+            transitionInfo = transitionInfo.RemoveEnd(kSuffix);
+            return ForkActivation.TimestampOnly(ulong.Parse(transitionInfo) * 1000);
         }
 
         public static BlockHeader Convert(TestBlockHeaderJson? headerJson)
@@ -74,7 +95,7 @@ namespace Ethereum.Test.Base
                 Bytes.FromHexString(headerJson.Difficulty).ToUInt256(),
                 (long)Bytes.FromHexString(headerJson.Number).ToUInt256(),
                 (long)Bytes.FromHexString(headerJson.GasLimit).ToUnsignedBigInteger(),
-                Bytes.FromHexString(headerJson.Timestamp).ToUInt256(),
+                (ulong)Bytes.FromHexString(headerJson.Timestamp).ToUnsignedBigInteger(),
                 Bytes.FromHexString(headerJson.ExtraData)
             );
 
@@ -103,11 +124,7 @@ namespace Ethereum.Test.Base
         public static Transaction Convert(PostStateJson postStateJson, TransactionJson transactionJson)
         {
             Transaction transaction = new();
-            if (transaction.AccessList != null)
-                transaction.Type = TxType.AccessList;
-            if (transactionJson.MaxFeePerGas != null)
-                transaction.Type = TxType.EIP1559;
-            
+
             transaction.Value = transactionJson.Value[postStateJson.Indexes.Value];
             transaction.GasLimit = transactionJson.GasLimit[postStateJson.Indexes.Gas];
             transaction.GasPrice = transactionJson.GasPrice ?? transactionJson.MaxPriorityFeePerGas ?? 0;
@@ -124,6 +141,14 @@ namespace Ethereum.Test.Base
                 ? transactionJson.AccessLists[postStateJson.Indexes.Data]
                 : transactionJson.AccessList, builder);
             transaction.AccessList = builder.ToAccessList();
+
+            if (transaction.AccessList.Data.Count != 0)
+                transaction.Type = TxType.AccessList;
+            else
+                transaction.AccessList = null;
+
+            if (transactionJson.MaxFeePerGas != null)
+                transaction.Type = TxType.EIP1559;
 
             return transaction;
         }
@@ -157,12 +182,14 @@ namespace Ethereum.Test.Base
         private static AccountState Convert(AccountStateJson accountStateJson)
         {
             AccountState state = new();
-            state.Balance = Bytes.FromHexString(accountStateJson.Balance).ToUInt256();
-            state.Code = Bytes.FromHexString(accountStateJson.Code);
-            state.Nonce = Bytes.FromHexString(accountStateJson.Nonce).ToUInt256();
-            state.Storage = accountStateJson.Storage.ToDictionary(
-                p => Bytes.FromHexString(p.Key).ToUInt256(),
-                p => Bytes.FromHexString(p.Value));
+            state.Balance = accountStateJson.Balance is not null ? Bytes.FromHexString(accountStateJson.Balance).ToUInt256() : 0;
+            state.Code = accountStateJson.Code is not null ? Bytes.FromHexString(accountStateJson.Code) : Array.Empty<byte>();
+            state.Nonce = accountStateJson.Nonce is not null ? Bytes.FromHexString(accountStateJson.Nonce).ToUInt256() : 0;
+            state.Storage = accountStateJson.Storage is not null
+                ? accountStateJson.Storage.ToDictionary(
+                    p => Bytes.FromHexString(p.Key).ToUInt256(),
+                    p => Bytes.FromHexString(p.Value))
+                : new();
             return state;
         }
 
@@ -170,7 +197,7 @@ namespace Ethereum.Test.Base
         {
             if (testJson.LoadFailure != null)
             {
-                return Enumerable.Repeat(new GeneralStateTest {Name = name, LoadFailure = testJson.LoadFailure}, 1);
+                return Enumerable.Repeat(new GeneralStateTest { Name = name, LoadFailure = testJson.LoadFailure }, 1);
             }
 
             List<GeneralStateTest> blockchainTests = new();
@@ -201,14 +228,11 @@ namespace Ethereum.Test.Base
                     test.CurrentNumber = testJson.Env.CurrentNumber;
                     test.CurrentTimestamp = testJson.Env.CurrentTimestamp;
                     test.CurrentBaseFee = testJson.Env.CurrentBaseFee;
+                    test.CurrentRandom = testJson.Env.CurrentRandom;
                     test.PostReceiptsRoot = stateJson.Logs;
                     test.PostHash = stateJson.Hash;
                     test.Pre = testJson.Pre.ToDictionary(p => new Address(p.Key), p => Convert(p.Value));
                     test.Transaction = Convert(stateJson, testJson.Transaction);
-                    if (!test.Fork.UseTxAccessLists)
-                    {
-                        test.Transaction.AccessList = null;
-                    }
 
                     blockchainTests.Add(test);
                     ++iterationNumber;
@@ -222,14 +246,14 @@ namespace Ethereum.Test.Base
         {
             if (testJson.LoadFailure != null)
             {
-                return new BlockchainTest {Name = name, LoadFailure = testJson.LoadFailure};
+                return new BlockchainTest { Name = name, LoadFailure = testJson.LoadFailure };
             }
 
             BlockchainTest test = new();
             test.Name = name;
             test.Network = testJson.EthereumNetwork;
             test.NetworkAfterTransition = testJson.EthereumNetworkAfterTransition;
-            test.TransitionBlockNumber = testJson.TransitionBlockNumber;
+            test.TransitionForkActivation = testJson.TransitionForkActivation;
             test.LastBlockHash = new Keccak(testJson.LastBlockHash);
             test.GenesisRlp = testJson.GenesisRlp == null ? null : new Rlp(Bytes.FromHexString(testJson.GenesisRlp));
             test.GenesisBlockHeader = testJson.GenesisBlockHeader;
@@ -250,7 +274,7 @@ namespace Ethereum.Test.Base
             return test;
         }
 
-        private static EthereumJsonSerializer _serializer = new();
+        private static readonly EthereumJsonSerializer _serializer = new();
 
         public static IEnumerable<GeneralStateTest> Convert(string json)
         {
@@ -291,7 +315,7 @@ namespace Ethereum.Test.Base
                 testSpec.EthereumNetwork = ParseSpec(networks[0]);
                 if (transitionInfo.Length > 1)
                 {
-                    testSpec.TransitionBlockNumber = int.Parse(transitionInfo[1]);
+                    testSpec.TransitionForkActivation = TransitionForkActivation(transitionInfo[1]);
                     testSpec.EthereumNetworkAfterTransition = ParseSpec(networks[1]);
                 }
 

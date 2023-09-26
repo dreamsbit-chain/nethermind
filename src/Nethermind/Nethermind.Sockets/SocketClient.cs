@@ -1,11 +1,9 @@
+// SPDX-FileCopyrightText: 2022 Demerzel Solutions Limited
+// SPDX-License-Identifier: LGPL-3.0-only
+
 using System;
 using System.Buffers;
-using System.Collections.Generic;
-using System.Diagnostics;
 using System.IO;
-using System.Linq;
-using System.Runtime.CompilerServices;
-using System.Text;
 using System.Threading.Tasks;
 using Nethermind.Serialization.Json;
 
@@ -75,7 +73,7 @@ namespace Nethermind.Sockets
                         // process the already filled bytes
                         await ProcessAsync(new ArraySegment<byte>(buffer, 0, currentMessageLength));
                         currentMessageLength = 0; // reset message length
-                        
+
                         // if we grew the buffer too big lets reset it
                         if (buffer.Length > 2 * standardBufferLength)
                         {

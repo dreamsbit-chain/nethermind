@@ -1,18 +1,5 @@
-//  Copyright (c) 2021 Demerzel Solutions Limited
-//  This file is part of the Nethermind library.
-// 
-//  The Nethermind library is free software: you can redistribute it and/or modify
-//  it under the terms of the GNU Lesser General Public License as published by
-//  the Free Software Foundation, either version 3 of the License, or
-//  (at your option) any later version.
-// 
-//  The Nethermind library is distributed in the hope that it will be useful,
-//  but WITHOUT ANY WARRANTY; without even the implied warranty of
-//  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-//  GNU Lesser General Public License for more details.
-// 
-//  You should have received a copy of the GNU Lesser General Public License
-//  along with the Nethermind. If not, see <http://www.gnu.org/licenses/>.
+// SPDX-FileCopyrightText: 2022 Demerzel Solutions Limited
+// SPDX-License-Identifier: LGPL-3.0-only
 
 using System;
 using System.Collections.Generic;
@@ -42,17 +29,17 @@ namespace Nethermind.Synchronization.Test
     {
         private class Context : IAsyncDisposable
         {
-            public INodeStatsManager Stats;
-            public IBlockTree BlockTree;
-            public IBetterPeerStrategy PeerStrategy;
-            public SyncPeerPool Pool;
+            public INodeStatsManager Stats { get; }
+            public IBlockTree BlockTree { get; }
+            public IBetterPeerStrategy PeerStrategy { get; }
+            public SyncPeerPool Pool { get; set; }
 
             public Context()
             {
                 BlockTree = Substitute.For<IBlockTree>();
                 Stats = Substitute.For<INodeStatsManager>();
-                PeerStrategy = new TotalDifficultyBasedBetterPeerStrategy(null, LimboLogs.Instance);
-                Pool = new SyncPeerPool(BlockTree, Stats, PeerStrategy, 25, 50, LimboLogs.Instance);
+                PeerStrategy = new TotalDifficultyBetterPeerStrategy(LimboLogs.Instance);
+                Pool = new SyncPeerPool(BlockTree, Stats, PeerStrategy, LimboLogs.Instance, 25, 50);
             }
 
             public async ValueTask DisposeAsync()
@@ -63,30 +50,33 @@ namespace Nethermind.Synchronization.Test
 
         private class SimpleSyncPeerMock : ISyncPeer
         {
+            public string Name => "SimpleMock";
             public SimpleSyncPeerMock(PublicKey publicKey, string description = "simple mock")
             {
                 Node = new Node(publicKey, "127.0.0.1", 30303);
                 ClientId = description;
             }
 
+            public Keccak HeadHash { get; set; } = null!;
+            public byte ProtocolVersion { get; } = default;
+            public string ProtocolCode { get; } = null!;
             public Node Node { get; }
             public string ClientId { get; }
-            public Keccak HeadHash { get; set; }
             public long HeadNumber { get; set; }
             public UInt256 TotalDifficulty { get; set; } = 1;
             public bool IsInitialized { get; set; }
             public bool IsPriority { get; set; }
 
-            public bool DisconnectRequested { get; set; }
+            public bool DisconnectRequested { get; private set; }
 
             public void Disconnect(DisconnectReason reason, string details)
             {
                 DisconnectRequested = true;
             }
 
-            public Task<BlockBody[]> GetBlockBodies(IReadOnlyList<Keccak> blockHashes, CancellationToken token)
+            public Task<OwnedBlockBodies> GetBlockBodies(IReadOnlyList<Keccak> blockHashes, CancellationToken token)
             {
-                return Task.FromResult(Array.Empty<BlockBody>());
+                return Task.FromResult(new OwnedBlockBodies(Array.Empty<BlockBody>()));
             }
 
             public Task<BlockHeader[]> GetBlockHeaders(long number, int maxBlocks, int skip, CancellationToken token)
@@ -94,7 +84,12 @@ namespace Nethermind.Synchronization.Test
                 return Task.FromResult(Array.Empty<BlockHeader>());
             }
 
-            public async Task<BlockHeader> GetHeadBlockHeader(Keccak hash, CancellationToken token)
+            public Task<BlockHeader[]> GetBlockHeaders(Keccak startHash, int maxBlocks, int skip, CancellationToken token)
+            {
+                return Task.FromResult(Array.Empty<BlockHeader>());
+            }
+
+            public async Task<BlockHeader?> GetHeadBlockHeader(Keccak? hash, CancellationToken token)
             {
                 if (_shouldFail)
                 {
@@ -115,17 +110,17 @@ namespace Nethermind.Synchronization.Test
                 return await Task.FromResult(Build.A.BlockHeader.TestObject);
             }
 
-            public void NotifyOfNewBlock(Block block, SendBlockPriority priority)
+            public void NotifyOfNewBlock(Block block, SendBlockMode mode)
             {
             }
 
             public PublicKey Id => Node.Id;
-            
+
             public void SendNewTransactions(IEnumerable<Transaction> txs, bool sendFullTx) { }
 
-            public Task<TxReceipt[][]> GetReceipts(IReadOnlyList<Keccak> blockHash, CancellationToken token)
+            public Task<TxReceipt[]?[]> GetReceipts(IReadOnlyList<Keccak> blockHash, CancellationToken token)
             {
-                return Task.FromResult(Array.Empty<TxReceipt[]>());
+                return Task.FromResult(Array.Empty<TxReceipt[]?>());
             }
 
             public Task<byte[][]> GetNodeData(IReadOnlyList<Keccak> hashes, CancellationToken token)
@@ -168,10 +163,10 @@ namespace Nethermind.Synchronization.Test
         [Test]
         public async Task Cannot_add_when_not_started()
         {
-            await using Context ctx = new(); 
+            await using Context ctx = new();
             for (int i = 0; i < 3; i++)
             {
-                Assert.AreEqual(0, ctx.Pool.PeerCount);
+                Assert.That(ctx.Pool.PeerCount, Is.EqualTo(0));
                 ctx.Pool.AddPeer(new SimpleSyncPeerMock(TestItem.PublicKeys[i]));
             }
         }
@@ -180,12 +175,25 @@ namespace Nethermind.Synchronization.Test
         public async Task Will_disconnect_one_when_at_max()
         {
             await using Context ctx = new();
-            var peers = await SetupPeers(ctx, 25);
+            SimpleSyncPeerMock[] peers = await SetupPeers(ctx, 25);
             await WaitForPeersInitialization(ctx);
             ctx.Pool.DropUselessPeers(true);
             Assert.True(peers.Any(p => p.DisconnectRequested));
         }
-        
+
+        [TestCase(true, false)]
+        [TestCase(false, true)]
+        public async Task Will_disconnect_when_refresh_exception_is_not_cancelled(bool isExceptionOperationCanceled, bool isDisconnectRequested)
+        {
+            await using Context ctx = new();
+            SimpleSyncPeerMock[] peers = await SetupPeers(ctx, 25);
+            SimpleSyncPeerMock peer = peers[0];
+
+            Exception refreshException = isExceptionOperationCanceled ? new OperationCanceledException() : new Exception();
+            ctx.Pool.ReportRefreshFailed(peer, "test with cancellation", refreshException);
+            peer.DisconnectRequested.Should().Be(isDisconnectRequested);
+        }
+
         [TestCase(0)]
         [TestCase(10)]
         [TestCase(24)]
@@ -194,9 +202,9 @@ namespace Nethermind.Synchronization.Test
             const int peersMaxCount = 25;
             const int priorityPeersMaxCount = 25;
             await using Context ctx = new();
-            ctx.Pool = new SyncPeerPool(ctx.BlockTree, ctx.Stats, ctx.PeerStrategy, peersMaxCount, priorityPeersMaxCount,50, LimboLogs.Instance);
-            var peers = await SetupPeers(ctx, peersMaxCount);
-            
+            ctx.Pool = new SyncPeerPool(ctx.BlockTree, ctx.Stats, ctx.PeerStrategy, LimboLogs.Instance, peersMaxCount, priorityPeersMaxCount, 50);
+            SimpleSyncPeerMock[] peers = await SetupPeers(ctx, peersMaxCount);
+
             // setting priority to all peers except one - peers[number]
             for (int i = 0; i < priorityPeersMaxCount; i++)
             {
@@ -209,16 +217,16 @@ namespace Nethermind.Synchronization.Test
             ctx.Pool.DropUselessPeers(true);
             Assert.True(peers[number].DisconnectRequested);
         }
-        
+
         [Test]
         public async Task Can_disconnect_priority_peer_if_their_amount_is_max()
         {
             const int peersMaxCount = 25;
             const int priorityPeersMaxCount = 25;
             await using Context ctx = new();
-            ctx.Pool = new SyncPeerPool(ctx.BlockTree, ctx.Stats, ctx.PeerStrategy, peersMaxCount, priorityPeersMaxCount,50, LimboLogs.Instance);
-            var peers = await SetupPeers(ctx, peersMaxCount);
-            
+            ctx.Pool = new SyncPeerPool(ctx.BlockTree, ctx.Stats, ctx.PeerStrategy, LimboLogs.Instance, peersMaxCount, priorityPeersMaxCount, 50);
+            SimpleSyncPeerMock[] peers = await SetupPeers(ctx, peersMaxCount);
+
             foreach (SimpleSyncPeerMock peer in peers)
             {
                 ctx.Pool.SetPeerPriority(peer.Id);
@@ -234,32 +242,32 @@ namespace Nethermind.Synchronization.Test
             const int peersMaxCount = 1;
             const int priorityPeersMaxCount = 1;
             await using Context ctx = new();
-            ctx.Pool = new SyncPeerPool(ctx.BlockTree, ctx.Stats, ctx.PeerStrategy, peersMaxCount, priorityPeersMaxCount,50, LimboLogs.Instance);
-            
+            ctx.Pool = new SyncPeerPool(ctx.BlockTree, ctx.Stats, ctx.PeerStrategy, LimboLogs.Instance, peersMaxCount, priorityPeersMaxCount, 50);
+
             SimpleSyncPeerMock peer = new(TestItem.PublicKeyA) { IsPriority = true };
             ctx.Pool.Start();
             ctx.Pool.AddPeer(peer);
             await WaitForPeersInitialization(ctx);
             ctx.Pool.PriorityPeerCount.Should().Be(1);
-            
+
             ctx.Pool.RemovePeer(peer);
             ctx.Pool.PriorityPeerCount.Should().Be(0);
         }
-        
+
         [Test]
         public async Task Should_increment_PriorityPeerCount_when_called_SetPriorityPeer()
         {
             const int peersMaxCount = 1;
             const int priorityPeersMaxCount = 1;
             await using Context ctx = new();
-            ctx.Pool = new SyncPeerPool(ctx.BlockTree, ctx.Stats, ctx.PeerStrategy, peersMaxCount, priorityPeersMaxCount,50, LimboLogs.Instance);
-            
+            ctx.Pool = new SyncPeerPool(ctx.BlockTree, ctx.Stats, ctx.PeerStrategy, LimboLogs.Instance, peersMaxCount, priorityPeersMaxCount, 50);
+
             SimpleSyncPeerMock peer = new(TestItem.PublicKeyA) { IsPriority = false };
             ctx.Pool.Start();
             ctx.Pool.AddPeer(peer);
             await WaitForPeersInitialization(ctx);
             ctx.Pool.PriorityPeerCount.Should().Be(0);
-            
+
             ctx.Pool.SetPeerPriority(peer.Id);
             ctx.Pool.PriorityPeerCount.Should().Be(1);
         }
@@ -280,7 +288,7 @@ namespace Nethermind.Synchronization.Test
 
             for (int i = 3; i > 0; i--)
             {
-                Assert.AreEqual(3, ctx.Pool.PeerCount, $"Remove {i}");
+                Assert.That(ctx.Pool.PeerCount, Is.EqualTo(3), $"Remove {i}");
                 ctx.Pool.RemovePeer(syncPeers[i - 1]);
             }
         }
@@ -292,7 +300,7 @@ namespace Nethermind.Synchronization.Test
             ctx.Pool.Start();
             for (int i = 0; i < 3; i++)
             {
-                Assert.AreEqual(i, ctx.Pool.PeerCount);
+                Assert.That(ctx.Pool.PeerCount, Is.EqualTo(i));
                 ctx.Pool.AddPeer(new SimpleSyncPeerMock(TestItem.PublicKeys[i]));
             }
         }
@@ -305,7 +313,7 @@ namespace Nethermind.Synchronization.Test
             ctx.Pool.AddPeer(new SimpleSyncPeerMock(TestItem.PublicKeyA));
             ctx.Pool.AddPeer(new SimpleSyncPeerMock(TestItem.PublicKeyA));
 
-            Assert.AreEqual(1, ctx.Pool.PeerCount);
+            Assert.That(ctx.Pool.PeerCount, Is.EqualTo(1));
         }
 
         [Test]
@@ -314,7 +322,7 @@ namespace Nethermind.Synchronization.Test
             await using Context ctx = new();
             ctx.Pool.Start();
             ctx.Pool.RemovePeer(new SimpleSyncPeerMock(TestItem.PublicKeyA));
-            Assert.AreEqual(0, ctx.Pool.PeerCount);
+            Assert.That(ctx.Pool.PeerCount, Is.EqualTo(0));
         }
 
         [Test]
@@ -331,7 +339,7 @@ namespace Nethermind.Synchronization.Test
 
             for (int i = 3; i > 0; i--)
             {
-                Assert.AreEqual(i, ctx.Pool.PeerCount, $"Remove {i}");
+                Assert.That(ctx.Pool.PeerCount, Is.EqualTo(i), $"Remove {i}");
                 ctx.Pool.RemovePeer(syncPeers[i - 1]);
             }
         }
@@ -356,20 +364,23 @@ namespace Nethermind.Synchronization.Test
         {
             await using Context ctx = new();
             ctx.Pool.Start();
-            var syncPeer = Substitute.For<ISyncPeer>();
+            ISyncPeer? syncPeer = Substitute.For<ISyncPeer>();
             syncPeer.Node.Returns(new Node(TestItem.PublicKeyA, "127.0.0.1", 30303));
             ctx.Pool.AddPeer(syncPeer);
-            ctx.Pool.RefreshTotalDifficulty(syncPeer, null);
+            ctx.Pool.RefreshTotalDifficulty(syncPeer, Keccak.Zero);
             await Task.Delay(100);
 
-            await syncPeer.Received(2).GetHeadBlockHeader(Arg.Any<Keccak>(), Arg.Any<CancellationToken>());
+            Assert.That(() =>
+                    syncPeer.ReceivedCalls().Count(call => call.GetMethodInfo().Name == "GetHeadBlockHeader"),
+                Is.EqualTo(2).After(1000, 100)
+            );
         }
 
         private void SetupSpeedStats(Context ctx, PublicKey publicKey, int transferSpeed)
         {
-            
+
             Node node = new(publicKey, "127.0.0.1", 30303);
-            NodeStatsLight stats = new (node);
+            NodeStatsLight stats = new(node);
             stats.AddTransferSpeedCaptureEvent(TransferSpeedType.Headers, transferSpeed);
 
             ctx.Stats.GetOrAdd(Arg.Is<Node>(n => n.Id == publicKey)).Returns(stats);
@@ -385,12 +396,12 @@ namespace Nethermind.Synchronization.Test
             ctx.Pool.Start();
             ctx.Pool.AddPeer(new SimpleSyncPeerMock(TestItem.PublicKeyA, "A"));
             await WaitForPeersInitialization(ctx);
-            var allocation = await ctx.Pool.Allocate(new BlocksSyncPeerAllocationStrategy(null));
+            SyncPeerAllocation allocation = await ctx.Pool.Allocate(new BlocksSyncPeerAllocationStrategy(null));
             bool replaced = false;
-            allocation.Replaced += (sender, args) => replaced = true;
+            allocation.Replaced += (_, _) => replaced = true;
             ctx.Pool.AddPeer(new SimpleSyncPeerMock(TestItem.PublicKeyB, "B"));
 
-            await WaitFor(() => replaced, "peer to get replaced");
+            await WaitFor(() => replaced);
             Assert.True(replaced);
         }
 
@@ -406,7 +417,7 @@ namespace Nethermind.Synchronization.Test
             await WaitForPeersInitialization(ctx);
             SyncPeerAllocation allocation = await ctx.Pool.Allocate(new BySpeedStrategy(TransferSpeedType.Headers, true));
             bool replaced = false;
-            allocation.Replaced += (sender, args) => replaced = true;
+            allocation.Replaced += (_, _) => replaced = true;
             ctx.Pool.AddPeer(new SimpleSyncPeerMock(TestItem.PublicKeyB));
             await WaitForPeersInitialization(ctx);
 
@@ -425,7 +436,7 @@ namespace Nethermind.Synchronization.Test
             await WaitForPeersInitialization(ctx);
             SyncPeerAllocation allocation = await ctx.Pool.Allocate(new BySpeedStrategy(TransferSpeedType.Headers, true));
             bool replaced = false;
-            allocation.Replaced += (sender, args) => replaced = true;
+            allocation.Replaced += (_, _) => replaced = true;
             ctx.Pool.AddPeer(new SimpleSyncPeerMock(TestItem.PublicKeyB));
             await WaitForPeersInitialization(ctx);
 
@@ -444,7 +455,7 @@ namespace Nethermind.Synchronization.Test
             await WaitForPeersInitialization(ctx);
             SyncPeerAllocation allocation = await ctx.Pool.Allocate(new BySpeedStrategy(TransferSpeedType.Headers, true));
             bool replaced = false;
-            allocation.Replaced += (sender, args) => replaced = true;
+            allocation.Replaced += (_, _) => replaced = true;
             ctx.Pool.AddPeer(new SimpleSyncPeerMock(TestItem.PublicKeyB));
             await WaitForPeersInitialization(ctx);
 
@@ -463,7 +474,7 @@ namespace Nethermind.Synchronization.Test
             await WaitForPeersInitialization(ctx);
             SyncPeerAllocation allocation = await ctx.Pool.Allocate(new BySpeedStrategy(TransferSpeedType.Headers, true));
             bool replaced = false;
-            allocation.Replaced += (sender, args) => replaced = true;
+            allocation.Replaced += (_, _) => replaced = true;
             ctx.Pool.AddPeer(new SimpleSyncPeerMock(TestItem.PublicKeyB));
             await WaitForPeersInitialization(ctx);
             Assert.False(replaced);
@@ -474,33 +485,33 @@ namespace Nethermind.Synchronization.Test
         {
             await using Context ctx = new();
             _ = await SetupPeers(ctx, 3);
-            Assert.AreEqual(3, ctx.Pool.AllPeers.Count());
+            Assert.That(ctx.Pool.AllPeers.Count(), Is.EqualTo(3));
         }
 
         [Test]
         public async Task Can_borrow_peer()
         {
             await using Context ctx = new();
-            var peers = await SetupPeers(ctx, 1);
+            SimpleSyncPeerMock[] peers = await SetupPeers(ctx, 1);
 
-            var allocation = await ctx.Pool.Allocate(new BySpeedStrategy(TransferSpeedType.Headers, true));
+            SyncPeerAllocation allocation = await ctx.Pool.Allocate(new BySpeedStrategy(TransferSpeedType.Headers, true));
 
-            Assert.AreSame(peers[0], allocation.Current?.SyncPeer);
+            Assert.That(allocation.Current?.SyncPeer, Is.SameAs(peers[0]));
         }
 
         [Test]
         public async Task Can_borrow_return_and_borrow_again()
         {
             await using Context ctx = new();
-            var peers = await SetupPeers(ctx, 1);
+            SimpleSyncPeerMock[] peers = await SetupPeers(ctx, 1);
 
-            var allocation = await ctx.Pool.Allocate(new BySpeedStrategy(TransferSpeedType.Headers, true));
+            SyncPeerAllocation allocation = await ctx.Pool.Allocate(new BySpeedStrategy(TransferSpeedType.Headers, true));
             ctx.Pool.Free(allocation);
             allocation = await ctx.Pool.Allocate(new BySpeedStrategy(TransferSpeedType.Headers, true));
             ctx.Pool.Free(allocation);
             allocation = await ctx.Pool.Allocate(new BySpeedStrategy(TransferSpeedType.Headers, true));
 
-            Assert.AreSame(peers[0], allocation.Current?.SyncPeer);
+            Assert.That(allocation.Current?.SyncPeer, Is.SameAs(peers[0]));
         }
 
         [Test]
@@ -511,7 +522,7 @@ namespace Nethermind.Synchronization.Test
 
             SyncPeerAllocation allocation1 = await ctx.Pool.Allocate(new BySpeedStrategy(TransferSpeedType.Headers, true));
             SyncPeerAllocation allocation2 = await ctx.Pool.Allocate(new BySpeedStrategy(TransferSpeedType.Headers, true));
-            Assert.AreNotSame(allocation1.Current, allocation2.Current, "first");
+            Assert.That(allocation2.Current, Is.Not.SameAs(allocation1.Current), "first");
             Assert.NotNull(allocation1.Current, "first A");
             Assert.NotNull(allocation2.Current, "first B");
 
@@ -522,7 +533,7 @@ namespace Nethermind.Synchronization.Test
 
             allocation1 = await ctx.Pool.Allocate(new BySpeedStrategy(TransferSpeedType.Headers, true));
             allocation2 = await ctx.Pool.Allocate(new BySpeedStrategy(TransferSpeedType.Headers, true));
-            Assert.AreNotSame(allocation1.Current, allocation2.Current);
+            Assert.That(allocation2.Current, Is.Not.SameAs(allocation1.Current));
             Assert.NotNull(allocation1.Current, "second A");
             Assert.NotNull(allocation2.Current, "second B");
         }
@@ -570,16 +581,16 @@ namespace Nethermind.Synchronization.Test
         {
             await using Context ctx = new();
             _ = await SetupPeers(ctx, 3);
-            Assert.AreEqual(3, ctx.Pool.InitializedPeers.Count());
+            Assert.That(ctx.Pool.InitializedPeers.Count(), Is.EqualTo(3));
         }
 
         [Test]
         public async Task Report_invalid_invokes_disconnection()
         {
             await using Context ctx = new();
-            var peers = await SetupPeers(ctx, 3);
-            var peerInfo = ctx.Pool.InitializedPeers.First();
-            ctx.Pool.ReportBreachOfProtocol(peerInfo, "issue details");
+            SimpleSyncPeerMock[] _ = await SetupPeers(ctx, 3);
+            PeerInfo peerInfo = ctx.Pool.InitializedPeers.First();
+            ctx.Pool.ReportBreachOfProtocol(peerInfo, DisconnectReason.Other, "issue details");
 
             Assert.True(((SimpleSyncPeerMock)peerInfo.SyncPeer).DisconnectRequested);
         }
@@ -588,12 +599,12 @@ namespace Nethermind.Synchronization.Test
         public async Task Will_not_allocate_same_peer_to_two_allocations()
         {
             await using Context ctx = new();
-            var peers = await SetupPeers(ctx, 1);
+            SimpleSyncPeerMock[] peers = await SetupPeers(ctx, 1);
 
-            var allocation1 = await ctx.Pool.Allocate(new BySpeedStrategy(TransferSpeedType.Headers, true));
-            var allocation2 = await ctx.Pool.Allocate(new BySpeedStrategy(TransferSpeedType.Headers, true));
+            SyncPeerAllocation allocation1 = await ctx.Pool.Allocate(new BySpeedStrategy(TransferSpeedType.Headers, true));
+            SyncPeerAllocation allocation2 = await ctx.Pool.Allocate(new BySpeedStrategy(TransferSpeedType.Headers, true));
 
-            Assert.AreSame(peers[0], allocation1.Current?.SyncPeer);
+            Assert.That(allocation1.Current?.SyncPeer, Is.SameAs(peers[0]));
             Assert.Null(allocation2.Current);
         }
 
@@ -601,9 +612,9 @@ namespace Nethermind.Synchronization.Test
         public async Task Can_remove_borrowed_peer()
         {
             await using Context ctx = new();
-            var peers = await SetupPeers(ctx, 1);
+            SimpleSyncPeerMock[] peers = await SetupPeers(ctx, 1);
 
-            var allocation = await ctx.Pool.Allocate(new BlocksSyncPeerAllocationStrategy(null));
+            SyncPeerAllocation allocation = await ctx.Pool.Allocate(new BlocksSyncPeerAllocationStrategy(null));
             ctx.Pool.RemovePeer(peers[0]);
 
             Assert.Null(allocation.Current);
@@ -613,7 +624,7 @@ namespace Nethermind.Synchronization.Test
         public async Task Will_remove_peer_if_times_out_on_init()
         {
             await using Context ctx = new();
-            var peer = new SimpleSyncPeerMock(TestItem.PublicKeyA);
+            SimpleSyncPeerMock peer = new SimpleSyncPeerMock(TestItem.PublicKeyA);
             peer.SetHeaderResponseTime(int.MaxValue);
             ctx.Pool.Start();
             ctx.Pool.AddPeer(peer);
@@ -626,33 +637,33 @@ namespace Nethermind.Synchronization.Test
         public async Task Can_remove_during_init()
         {
             await using Context ctx = new();
-            var peer = new SimpleSyncPeerMock(TestItem.PublicKeyA);
+            SimpleSyncPeerMock peer = new SimpleSyncPeerMock(TestItem.PublicKeyA);
             peer.SetHeaderResponseTime(500);
             ctx.Pool.Start();
             ctx.Pool.AddPeer(peer);
 
-            var allocation = await ctx.Pool.Allocate(new BySpeedStrategy(TransferSpeedType.Headers, true));
+            SyncPeerAllocation allocation = await ctx.Pool.Allocate(new BySpeedStrategy(TransferSpeedType.Headers, true));
             ctx.Pool.RemovePeer(peer);
 
-            Assert.AreEqual(null, allocation.Current);
-            Assert.AreEqual(0, ctx.Pool.PeerCount);
+            Assert.That(allocation.Current, Is.EqualTo(null));
+            Assert.That(ctx.Pool.PeerCount, Is.EqualTo(0));
         }
 
         [Test]
         public async Task It_is_fine_to_fail_init()
         {
             await using Context ctx = new();
-            var peer = new SimpleSyncPeerMock(TestItem.PublicKeyA);
+            SimpleSyncPeerMock peer = new SimpleSyncPeerMock(TestItem.PublicKeyA);
             peer.SetHeaderFailure(true);
             ctx.Pool.Start();
             ctx.Pool.AddPeer(peer);
             await WaitForPeersInitialization(ctx);
 
-            var allocation = await ctx.Pool.Allocate(new BySpeedStrategy(TransferSpeedType.Headers, true));
+            SyncPeerAllocation allocation = await ctx.Pool.Allocate(new BySpeedStrategy(TransferSpeedType.Headers, true));
             ctx.Pool.RemovePeer(peer);
 
-            Assert.AreEqual(null, allocation.Current);
-            Assert.AreEqual(0, ctx.Pool.PeerCount);
+            Assert.That(allocation.Current, Is.EqualTo(null));
+            Assert.That(ctx.Pool.PeerCount, Is.EqualTo(0));
         }
 
         [Test]
@@ -661,17 +672,17 @@ namespace Nethermind.Synchronization.Test
             await using Context ctx = new();
             await SetupPeers(ctx, 1);
 
-            var allocation = await ctx.Pool.Allocate(new BySpeedStrategy(TransferSpeedType.Headers, true));
+            SyncPeerAllocation allocation = await ctx.Pool.Allocate(new BySpeedStrategy(TransferSpeedType.Headers, true));
             ctx.Pool.Free(allocation);
         }
-        
+
         [Test]
         public async Task Does_not_fail_when_receiving_a_new_block_and_allocation_has_no_peer()
         {
             await using Context ctx = new();
             await SetupPeers(ctx, 1);
 
-            var allocation = await ctx.Pool.Allocate(new BySpeedStrategy(TransferSpeedType.Headers, true));
+            SyncPeerAllocation allocation = await ctx.Pool.Allocate(new BySpeedStrategy(TransferSpeedType.Headers, true));
             allocation.Cancel();
 
             ctx.BlockTree.NewHeadBlock += Raise.EventWith(new object(), new BlockEventArgs(Build.A.Block.WithTotalDifficulty(1L).TestObject));
@@ -683,7 +694,7 @@ namespace Nethermind.Synchronization.Test
             await using Context ctx = new();
             await SetupPeers(ctx, 2);
 
-            var allocationTasks = new Task<SyncPeerAllocation>[3];
+            Task<SyncPeerAllocation>[] allocationTasks = new Task<SyncPeerAllocation>[3];
             for (int i = 0; i < allocationTasks.Length; i++)
             {
                 allocationTasks[i] = ctx.Pool.Allocate(new BySpeedStrategy(TransferSpeedType.Headers, true), AllocationContexts.All, 50);
@@ -691,13 +702,13 @@ namespace Nethermind.Synchronization.Test
 
             await Task.WhenAll(allocationTasks);
 
-            var allocations = allocationTasks.Select(t => t.Result).ToArray();
-            var successfulAllocations = allocations.Where(r => r.Current != null).ToArray();
+            SyncPeerAllocation[] allocations = allocationTasks.Select(t => t.Result).ToArray();
+            SyncPeerAllocation[] successfulAllocations = allocations.Where(r => r.Current is not null).ToArray();
 
             // we had only two peers and 3 borrow calls so only two are successful
-            Assert.AreEqual(2, successfulAllocations.Length);
+            Assert.That(successfulAllocations.Length, Is.EqualTo(2));
 
-            foreach (var allocation in successfulAllocations)
+            foreach (SyncPeerAllocation allocation in successfulAllocations)
             {
                 // free allocated peers
                 ctx.Pool.Free(allocation);
@@ -712,7 +723,7 @@ namespace Nethermind.Synchronization.Test
 
         private int _pendingRequests;
 
-        private Random _workRandomDelay = new(42);
+        private readonly Random _workRandomDelay = new(42);
 
         private async Task DoWork(string desc, SyncPeerAllocation allocation)
         {
@@ -752,9 +763,7 @@ namespace Nethermind.Synchronization.Test
 
 
                     Task task = DoWork(iterationsLocal.ToString(), allocation);
-#pragma warning disable 4014
-                    task.ContinueWith(t =>
-#pragma warning restore 4014
+                    Task _ = task.ContinueWith(t =>
                     {
                         Console.WriteLine($"{iterationsLocal} Decrement on {t.IsCompleted}");
                         Interlocked.Decrement(ref _pendingRequests);
@@ -765,14 +774,14 @@ namespace Nethermind.Synchronization.Test
                 await Task.Delay(10);
             } while (iterations-- > 0 || _pendingRequests > 0);
 
-            Assert.AreEqual(0, ctx.Pool.ReplaceableAllocations.Count(), "allocations");
-            Assert.AreEqual(0, _pendingRequests, "pending requests");
+            Assert.That(ctx.Pool.ReplaceableAllocations.Count(), Is.EqualTo(0), "allocations");
+            Assert.That(_pendingRequests, Is.EqualTo(0), "pending requests");
             Assert.GreaterOrEqual(failures, 0, "pending requests");
         }
 
         private async Task<SimpleSyncPeerMock[]> SetupPeers(Context ctx, int count)
         {
-            var peers = new SimpleSyncPeerMock[count];
+            SimpleSyncPeerMock[] peers = new SimpleSyncPeerMock[count];
             for (int i = 0; i < count; i++)
             {
                 peers[i] = new SimpleSyncPeerMock(TestItem.PublicKeys[i]);
@@ -791,20 +800,19 @@ namespace Nethermind.Synchronization.Test
 
         private async Task WaitForPeersInitialization(Context ctx)
         {
-            await WaitFor(() => ctx.Pool.AllPeers.All(p => p.IsInitialized), "peers to initialize");
+            await WaitFor(() => ctx.Pool.AllPeers.All(p => p.IsInitialized));
         }
 
-        private async Task WaitFor(Func<bool> isConditionMet, string description = "condition to be met")
+        private async Task WaitFor(Func<bool> isConditionMet)
         {
-            const int waitInterval = 10;
-            for (int i = 0; i < 10; i++)
+            const int waitInterval = 50;
+            for (int i = 0; i < 20; i++)
             {
                 if (isConditionMet())
                 {
                     return;
                 }
 
-                TestContext.WriteLine($"({i}) Waiting {waitInterval} for {description}");
                 await Task.Delay(waitInterval);
             }
         }

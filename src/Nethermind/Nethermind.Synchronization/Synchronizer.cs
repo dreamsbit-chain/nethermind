@@ -1,18 +1,5 @@
-//  Copyright (c) 2021 Demerzel Solutions Limited
-//  This file is part of the Nethermind library.
-// 
-//  The Nethermind library is free software: you can redistribute it and/or modify
-//  it under the terms of the GNU Lesser General Public License as published by
-//  the Free Software Foundation, either version 3 of the License, or
-//  (at your option) any later version.
-// 
-//  The Nethermind library is distributed in the hope that it will be useful,
-//  but WITHOUT ANY WARRANTY; without even the implied warranty of
-//  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-//  GNU Lesser General Public License for more details.
-// 
-//  You should have received a copy of the GNU Lesser General Public License
-//  along with the Nethermind. If not, see <http://www.gnu.org/licenses/>.
+// SPDX-FileCopyrightText: 2022 Demerzel Solutions Limited
+// SPDX-License-Identifier: LGPL-3.0-only
 
 using System;
 using System.Threading;
@@ -20,15 +7,15 @@ using System.Threading.Tasks;
 using Nethermind.Blockchain;
 using Nethermind.Blockchain.Receipts;
 using Nethermind.Blockchain.Synchronization;
-using Nethermind.Consensus;
-using Nethermind.Consensus.Validators;
+using Nethermind.Config;
+using Nethermind.Core.Extensions;
 using Nethermind.Core.Specs;
 using Nethermind.Db;
 using Nethermind.Logging;
-using Nethermind.State.Snap;
 using Nethermind.Stats;
 using Nethermind.Stats.Model;
 using Nethermind.Synchronization.Blocks;
+using Nethermind.Synchronization.DbTuner;
 using Nethermind.Synchronization.FastBlocks;
 using Nethermind.Synchronization.FastSync;
 using Nethermind.Synchronization.ParallelSync;
@@ -36,18 +23,18 @@ using Nethermind.Synchronization.Peers;
 using Nethermind.Synchronization.Reporting;
 using Nethermind.Synchronization.SnapSync;
 using Nethermind.Synchronization.StateSync;
-using Nethermind.Trie.Pruning;
 
 namespace Nethermind.Synchronization
 {
     public class Synchronizer : ISynchronizer
     {
-        
+        private const int FeedsTerminationTimeout = 5_000;
+
         private readonly ISpecProvider _specProvider;
         private readonly IReceiptStorage _receiptStorage;
         private readonly IBlockDownloaderFactory _blockDownloaderFactory;
         private readonly INodeStatsManager _nodeStatsManager;
-        
+
         protected readonly ILogger _logger;
         protected readonly IBlockTree _blockTree;
         protected readonly ISyncConfig _syncConfig;
@@ -57,7 +44,7 @@ namespace Nethermind.Synchronization
         protected readonly ISyncReport _syncReport;
         protected readonly IPivot _pivot;
 
-        protected readonly CancellationTokenSource _syncCancellation = new();
+        protected CancellationTokenSource? _syncCancellation = new();
 
         /* sync events are used mainly for managing sync peers reputation */
         public event EventHandler<SyncEventArgs>? SyncEvent;
@@ -71,7 +58,7 @@ namespace Nethermind.Synchronization
         private HeadersSyncFeed? _headersFeed;
         private BodiesSyncFeed? _bodiesFeed;
         private ReceiptsSyncFeed? _receiptsFeed;
-
+        private IProcessExitSource _exitSource;
 
         public Synchronizer(
             IDbProvider dbProvider,
@@ -86,6 +73,7 @@ namespace Nethermind.Synchronization
             IBlockDownloaderFactory blockDownloaderFactory,
             IPivot pivot,
             ISyncReport syncReport,
+            IProcessExitSource processExitSource,
             ILogManager logManager)
         {
             _dbProvider = dbProvider ?? throw new ArgumentNullException(nameof(dbProvider));
@@ -100,8 +88,11 @@ namespace Nethermind.Synchronization
             _pivot = pivot ?? throw new ArgumentNullException(nameof(pivot));
             _syncPeerPool = peerPool ?? throw new ArgumentNullException(nameof(peerPool));
             _nodeStatsManager = nodeStatsManager ?? throw new ArgumentNullException(nameof(nodeStatsManager));
+            _exitSource = processExitSource ?? throw new ArgumentNullException(nameof(processExitSource));
             _logManager = logManager ?? throw new ArgumentNullException(nameof(logManager));
             _syncReport = syncReport ?? throw new ArgumentNullException(nameof(syncReport));
+
+            new MallocTrimmer(syncModeSelector, TimeSpan.FromSeconds(syncConfig.MallocTrimIntervalSec), _logManager);
         }
 
         public virtual void Start()
@@ -110,9 +101,9 @@ namespace Nethermind.Synchronization
             {
                 return;
             }
-            
+
             StartFullSyncComponents();
-            
+
             if (_syncConfig.FastSync)
             {
                 if (_syncConfig.FastBlocks)
@@ -121,20 +112,30 @@ namespace Nethermind.Synchronization
                 }
 
                 StartFastSyncComponents();
-                
+
                 if (_syncConfig.SnapSync)
                 {
                     StartSnapSyncComponents();
                 }
-                
+
                 StartStateSyncComponents();
+            }
+
+            if (_syncConfig.TuneDbMode != ITunableDb.TuneType.Default || _syncConfig.BlocksDbTuneDbMode != ITunableDb.TuneType.Default)
+            {
+                SetupDbOptimizer();
+            }
+
+            if (_syncConfig.ExitOnSynced)
+            {
+                _exitSource.WatchForExit(_syncMode, _logManager, TimeSpan.FromSeconds(_syncConfig.ExitOnSyncedWaitTimeSec));
             }
         }
 
-        public Task StopAsync()
+        private void SetupDbOptimizer()
         {
-            _syncCancellation?.Cancel();
-            return Task.CompletedTask;
+            new SyncDbTuner(_syncConfig, _snapSyncFeed, _bodiesFeed, _receiptsFeed, _dbProvider.StateDb, _dbProvider.CodeDb,
+                _dbProvider.BlocksDb, _dbProvider.ReceiptsDb);
         }
 
         private void StartFullSyncComponents()
@@ -142,7 +143,14 @@ namespace Nethermind.Synchronization
             _fullSyncFeed = new FullSyncFeed(_syncMode, LimboLogs.Instance);
             BlockDownloader fullSyncBlockDownloader = _blockDownloaderFactory.Create(_fullSyncFeed);
             fullSyncBlockDownloader.SyncEvent += DownloaderOnSyncEvent;
-            fullSyncBlockDownloader.Start(_syncCancellation.Token).ContinueWith(t =>
+
+            SyncDispatcher<BlocksRequest> dispatcher = CreateDispatcher(
+                _fullSyncFeed,
+                fullSyncBlockDownloader,
+                _blockDownloaderFactory.CreateAllocationStrategyFactory()
+            );
+
+            dispatcher.Start(_syncCancellation!.Token).ContinueWith(t =>
             {
                 if (t.IsFaulted)
                 {
@@ -155,11 +163,41 @@ namespace Nethermind.Synchronization
             });
         }
 
+        private void StartFastSyncComponents()
+        {
+            _fastSyncFeed = new FastSyncFeed(_syncMode, _syncConfig, _logManager);
+            BlockDownloader downloader = _blockDownloaderFactory.Create(_fastSyncFeed);
+            downloader.SyncEvent += DownloaderOnSyncEvent;
+
+            SyncDispatcher<BlocksRequest> dispatcher = CreateDispatcher(
+                _fastSyncFeed,
+                downloader,
+                _blockDownloaderFactory.CreateAllocationStrategyFactory()
+            );
+
+            dispatcher.Start(_syncCancellation!.Token).ContinueWith(t =>
+            {
+                if (t.IsFaulted)
+                {
+                    if (_logger.IsError) _logger.Error("Fast sync failed", t.Exception);
+                }
+                else
+                {
+                    if (_logger.IsInfo) _logger.Info("Fast sync blocks downloader task completed.");
+                }
+            });
+        }
+
         private void StartStateSyncComponents()
         {
             TreeSync treeSync = new(SyncMode.StateNodes, _dbProvider.CodeDb, _dbProvider.StateDb, _blockTree, _logManager);
             _stateSyncFeed = new StateSyncFeed(_syncMode, treeSync, _logManager);
-            StateSyncDispatcher stateSyncDispatcher = new(_stateSyncFeed!, _syncPeerPool, new StateSyncAllocationStrategyFactory(), _logManager);
+            SyncDispatcher<StateSyncBatch> stateSyncDispatcher = CreateDispatcher(
+                _stateSyncFeed,
+                new StateSyncDownloader(_logManager),
+                new StateSyncAllocationStrategyFactory()
+            );
+
             Task syncDispatcherTask = stateSyncDispatcher.Start(_syncCancellation.Token).ContinueWith(t =>
             {
                 if (t.IsFaulted)
@@ -175,10 +213,14 @@ namespace Nethermind.Synchronization
 
         private void StartSnapSyncComponents()
         {
-            _snapSyncFeed = new SnapSyncFeed(_syncMode, _snapProvider, _blockTree, _logManager);
-            SnapSyncDispatcher dispatcher = new(_snapSyncFeed!, _syncPeerPool, new SnapSyncAllocationStrategyFactory(), _logManager);
-            
-            Task _ = dispatcher.Start(_syncCancellation.Token).ContinueWith(t =>
+            _snapSyncFeed = new SnapSyncFeed(_syncMode, _snapProvider, _logManager);
+            SyncDispatcher<SnapSyncBatch> dispatcher = CreateDispatcher(
+                _snapSyncFeed,
+                new SnapSyncDownloader(_logManager),
+                new SnapSyncAllocationStrategyFactory()
+            );
+
+            Task _ = dispatcher.Start(_syncCancellation!.Token).ContinueWith(t =>
             {
                 if (t.IsFaulted)
                 {
@@ -190,14 +232,19 @@ namespace Nethermind.Synchronization
                 }
             });
         }
-        
+
         private void StartFastBlocksComponents()
         {
             FastBlocksPeerAllocationStrategyFactory fastFactory = new();
 
             _headersFeed = new HeadersSyncFeed(_syncMode, _blockTree, _syncPeerPool, _syncConfig, _syncReport, _logManager);
-            HeadersSyncDispatcher headersDispatcher = new(_headersFeed!, _syncPeerPool, fastFactory, _logManager);
-            Task headersTask = headersDispatcher.Start(_syncCancellation.Token).ContinueWith(t =>
+            SyncDispatcher<HeadersSyncBatch> headersDispatcher = CreateDispatcher(
+                _headersFeed,
+                new HeadersSyncDownloader(_logManager),
+                fastFactory
+            );
+
+            Task headersTask = headersDispatcher.Start(_syncCancellation!.Token).ContinueWith(t =>
             {
                 if (t.IsFaulted)
                 {
@@ -214,7 +261,13 @@ namespace Nethermind.Synchronization
                 if (_syncConfig.DownloadBodiesInFastSync)
                 {
                     _bodiesFeed = new BodiesSyncFeed(_syncMode, _blockTree, _syncPeerPool, _syncConfig, _syncReport, _specProvider, _logManager);
-                    BodiesSyncDispatcher bodiesDispatcher = new(_bodiesFeed!, _syncPeerPool, fastFactory, _logManager);
+
+                    SyncDispatcher<BodiesSyncBatch> bodiesDispatcher = CreateDispatcher(
+                        _bodiesFeed,
+                        new BodiesSyncDownloader(_logManager),
+                        fastFactory
+                    );
+
                     Task bodiesTask = bodiesDispatcher.Start(_syncCancellation.Token).ContinueWith(t =>
                     {
                         if (t.IsFaulted)
@@ -231,7 +284,13 @@ namespace Nethermind.Synchronization
                 if (_syncConfig.DownloadReceiptsInFastSync)
                 {
                     _receiptsFeed = new ReceiptsSyncFeed(_syncMode, _specProvider, _blockTree, _receiptStorage, _syncPeerPool, _syncConfig, _syncReport, _logManager);
-                    ReceiptsSyncDispatcher receiptsDispatcher = new(_receiptsFeed!, _syncPeerPool, fastFactory, _logManager);
+
+                    SyncDispatcher<ReceiptsSyncBatch> receiptsDispatcher = CreateDispatcher(
+                        _receiptsFeed,
+                        new ReceiptsSyncDispatcher(_logManager),
+                        fastFactory
+                    );
+
                     Task receiptsTask = receiptsDispatcher.Start(_syncCancellation.Token).ContinueWith(t =>
                     {
                         if (t.IsFaulted)
@@ -247,23 +306,15 @@ namespace Nethermind.Synchronization
             }
         }
 
-        private void StartFastSyncComponents()
+        protected SyncDispatcher<T> CreateDispatcher<T>(ISyncFeed<T> feed, ISyncDownloader<T> downloader, IPeerAllocationStrategyFactory<T> peerAllocationStrategyFactory)
         {
-            _fastSyncFeed = new FastSyncFeed(_syncMode, _syncConfig, _logManager);
-            BlockDownloader downloader = _blockDownloaderFactory.Create(_fastSyncFeed);
-            downloader.SyncEvent += DownloaderOnSyncEvent;
-
-            downloader.Start(_syncCancellation.Token).ContinueWith(t =>
-            {
-                if (t.IsFaulted)
-                {
-                    if (_logger.IsError) _logger.Error("Fast sync failed", t.Exception);
-                }
-                else
-                {
-                    if (_logger.IsInfo) _logger.Info("Fast sync blocks downloader task completed.");
-                }
-            });
+            return new(
+                _syncConfig.MaxProcessingThreads,
+                feed!,
+                downloader,
+                _syncPeerPool,
+                peerAllocationStrategyFactory,
+                _logManager);
         }
 
         private NodeStatsEventType Convert(SyncEvent syncEvent)
@@ -284,15 +335,31 @@ namespace Nethermind.Synchronization
             SyncEvent?.Invoke(this, e);
         }
 
-        public void Dispose()
+        public Task StopAsync()
         {
             _syncCancellation?.Cancel();
-            _syncCancellation?.Dispose();
-            _syncReport?.Dispose();
 
+            return Task.WhenAny(
+                Task.Delay(FeedsTerminationTimeout),
+                Task.WhenAll(
+                    _fastSyncFeed?.FeedTask ?? Task.CompletedTask,
+                    _stateSyncFeed?.FeedTask ?? Task.CompletedTask,
+                    _snapSyncFeed?.FeedTask ?? Task.CompletedTask,
+                    _fullSyncFeed?.FeedTask ?? Task.CompletedTask,
+                    _headersFeed?.FeedTask ?? Task.CompletedTask,
+                    _bodiesFeed?.FeedTask ?? Task.CompletedTask,
+                    _receiptsFeed?.FeedTask ?? Task.CompletedTask));
+        }
+
+        public void Dispose()
+        {
+            CancellationTokenExtensions.CancelDisposeAndClear(ref _syncCancellation);
+            _syncReport.Dispose();
             _fastSyncFeed?.Dispose();
             _stateSyncFeed?.Dispose();
+            _snapSyncFeed?.Dispose();
             _fullSyncFeed?.Dispose();
+            _headersFeed?.Dispose();
             _bodiesFeed?.Dispose();
             _receiptsFeed?.Dispose();
         }

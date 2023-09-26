@@ -1,23 +1,10 @@
-﻿//  Copyright (c) 2021 Demerzel Solutions Limited
-//  This file is part of the Nethermind library.
-// 
-//  The Nethermind library is free software: you can redistribute it and/or modify
-//  it under the terms of the GNU Lesser General Public License as published by
-//  the Free Software Foundation, either version 3 of the License, or
-//  (at your option) any later version.
-// 
-//  The Nethermind library is distributed in the hope that it will be useful,
-//  but WITHOUT ANY WARRANTY; without even the implied warranty of
-//  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-//  GNU Lesser General Public License for more details.
-// 
-//  You should have received a copy of the GNU Lesser General Public License
-//  along with the Nethermind. If not, see <http://www.gnu.org/licenses/>.
-// 
+// SPDX-FileCopyrightText: 2022 Demerzel Solutions Limited
+// SPDX-License-Identifier: LGPL-3.0-only
 
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Threading;
 using Nethermind.Core;
@@ -37,33 +24,23 @@ namespace Nethermind.TxPool
     {
         private readonly ITxPoolConfig _txPoolConfig;
         private readonly IChainHeadInfoProvider _headInfo;
+        private readonly ITxGossipPolicy _txGossipPolicy;
 
-        /// <summary>
-        /// Notification threshold randomizer seed
-        /// </summary>
-        private static int _seed = Environment.TickCount;
-
-        /// <summary>
-        /// Random number generator for peer notification threshold - no need to be securely random.
-        /// </summary>
-        private static readonly ThreadLocal<Random> Random =
-            new(() => new Random(Interlocked.Increment(ref _seed)));
-        
         /// <summary>
         /// Timer for rebroadcasting pending own transactions.
         /// </summary>
         private readonly ITimer _timer;
-        
+
         /// <summary>
         /// Connected peers that can be notified about transactions.
         /// </summary>
         private readonly ConcurrentDictionary<PublicKey, ITxPoolPeer> _peers = new();
-        
+
         /// <summary>
         /// Transactions published locally (initiated by this node users) or reorganised.
         /// </summary>
-        private readonly SortedPool<Keccak, Transaction, Address> _persistentTxs;
-        
+        private readonly SortedPool<ValueKeccak, Transaction, Address> _persistentTxs;
+
         /// <summary>
         /// Transactions added by external peers between timer elapses.
         /// </summary>
@@ -74,16 +51,25 @@ namespace Nethermind.TxPool
         /// </summary>
         private ResettableList<Transaction> _txsToSend;
 
+        /// <summary>
+        /// Used to throttle tx broadcast. Particularly during forward sync where the head changes a lot which triggers
+        /// a lot of broadcast. There are no transaction in pool but its quite spammy on the log.
+        /// </summary>
+        private DateTimeOffset _lastPersistedTxBroadcast = DateTimeOffset.UnixEpoch;
+        private readonly TimeSpan _minTimeBetweenPersistedTxBroadcast = TimeSpan.FromSeconds(1);
+
         private readonly ILogger _logger;
 
         public TxBroadcaster(IComparer<Transaction> comparer,
             ITimerFactory timerFactory,
             ITxPoolConfig txPoolConfig,
             IChainHeadInfoProvider chainHeadInfoProvider,
-            ILogManager? logManager)
+            ILogManager? logManager,
+            ITxGossipPolicy? transactionsGossipPolicy = null)
         {
             _txPoolConfig = txPoolConfig;
             _headInfo = chainHeadInfoProvider;
+            _txGossipPolicy = transactionsGossipPolicy ?? ShouldGossip.Instance;
             _logger = logManager?.GetClassLogger() ?? throw new ArgumentNullException(nameof(logManager));
             _persistentTxs = new TxDistinctSortedPool(MemoryAllowance.MemPoolSize, comparer, logManager);
             _accumulatedTemporaryTxs = new ResettableList<Transaction>(512, 4);
@@ -112,7 +98,10 @@ namespace Nethermind.TxPool
         private void StartBroadcast(Transaction tx)
         {
             NotifyPeersAboutLocalTx(tx);
-            _persistentTxs.TryInsert(tx.Hash, tx);
+            if (tx.Hash is not null)
+            {
+                _persistentTxs.TryInsert(tx.Hash, tx);
+            }
         }
 
         private void BroadcastOnce(Transaction tx)
@@ -122,30 +111,54 @@ namespace Nethermind.TxPool
                 _accumulatedTemporaryTxs.Add(tx);
             }
         }
-        
+
         public void BroadcastOnce(ITxPoolPeer peer, Transaction[] txs)
         {
             Notify(peer, txs, false);
         }
-        
+
         public void BroadcastPersistentTxs()
         {
+            if (_persistentTxs.Count == 0)
+            {
+                if (_logger.IsTrace) _logger.Trace($"There is nothing to broadcast - collection of persistent txs is empty");
+                return;
+            }
+
+            DateTimeOffset now = DateTimeOffset.Now;
+            if (_lastPersistedTxBroadcast + _minTimeBetweenPersistedTxBroadcast > now)
+            {
+                if (_logger.IsTrace) _logger.Trace($"Minimum time between persistent tx broadcast not reached.");
+                return;
+            }
+            _lastPersistedTxBroadcast = now;
+
             if (_txPoolConfig.PeerNotificationThreshold > 0)
             {
-                IList<Transaction> persistentTxsToSend = GetPersistentTxsToSend();
+                (IList<Transaction>? transactionsToSend, IList<Transaction>? hashesToSend) = GetPersistentTxsToSend();
 
-                if (persistentTxsToSend.Count > 0)
+                if (transactionsToSend is not null)
                 {
-                    if (_logger.IsDebug) _logger.Debug($"Broadcasting {persistentTxsToSend.Count} persistent transactions to all peers.");
+                    if (_logger.IsDebug) _logger.Debug($"Broadcasting {transactionsToSend.Count} persistent transactions to all peers.");
 
                     foreach ((_, ITxPoolPeer peer) in _peers)
                     {
-                        Notify(peer, persistentTxsToSend, true);
+                        Notify(peer, transactionsToSend, true);
                     }
                 }
                 else
                 {
                     if (_logger.IsDebug) _logger.Debug($"There are currently no transactions able to broadcast.");
+                }
+
+                if (hashesToSend is not null)
+                {
+                    if (_logger.IsDebug) _logger.Debug($"Announcing {hashesToSend.Count} hashes of persistent transactions to all peers.");
+
+                    foreach ((_, ITxPoolPeer peer) in _peers)
+                    {
+                        Notify(peer, hashesToSend, false);
+                    }
                 }
             }
             else
@@ -153,26 +166,40 @@ namespace Nethermind.TxPool
                 if (_logger.IsDebug) _logger.Debug($"PeerNotificationThreshold is not a positive value: {_txPoolConfig.PeerNotificationThreshold}. Skipping broadcasting persistent transactions.");
             }
         }
-        
-        internal IList<Transaction> GetPersistentTxsToSend()
+
+        internal (IList<Transaction>? TransactionsToSend, IList<Transaction>? HashesToSend) GetPersistentTxsToSend()
         {
             // PeerNotificationThreshold is a declared in config max percent of transactions in persistent broadcast,
             // which will be sent after processing of every block. numberOfPersistentTxsToBroadcast is equal to
             // PeerNotificationThreshold multiplication by number of transactions in persistent broadcast, rounded up.
             int numberOfPersistentTxsToBroadcast =
-                Math.Min(_txPoolConfig.PeerNotificationThreshold * _persistentTxs.Count / 100 + 1,
-                    _persistentTxs.Count);
+                Math.Min(_txPoolConfig.PeerNotificationThreshold * _persistentTxs.Count / 100 + 1, _persistentTxs.Count);
 
-            List<Transaction> persistentTxsToSend = new(numberOfPersistentTxsToBroadcast);
+            List<Transaction>? persistentTxsToSend = null;
+            List<Transaction>? persistentHashesToSend = null;
 
-            foreach (Transaction tx in _persistentTxs.GetFirsts())
+            bool broadcastAllTxs = _txPoolConfig.PeerNotificationThreshold == 100;
+            IEnumerable<Transaction> txsToPickFrom = broadcastAllTxs
+                ? _persistentTxs.GetSnapshot()
+                : _persistentTxs.GetFirsts();
+
+            foreach (Transaction tx in txsToPickFrom)
             {
                 if (numberOfPersistentTxsToBroadcast > 0)
                 {
                     if (tx.MaxFeePerGas >= _headInfo.CurrentBaseFee)
                     {
                         numberOfPersistentTxsToBroadcast--;
-                        persistentTxsToSend.Add(tx);
+                        if (tx.CanBeBroadcast())
+                        {
+                            persistentTxsToSend ??= new List<Transaction>(numberOfPersistentTxsToBroadcast);
+                            persistentTxsToSend.Add(tx);
+                        }
+                        else
+                        {
+                            persistentHashesToSend ??= new List<Transaction>(numberOfPersistentTxsToBroadcast);
+                            persistentHashesToSend.Add(tx);
+                        }
                     }
                 }
                 else
@@ -181,14 +208,14 @@ namespace Nethermind.TxPool
                 }
             }
 
-            return persistentTxsToSend;
+            return (persistentTxsToSend, persistentHashesToSend);
         }
-        
+
         public void StopBroadcast(Keccak txHash)
         {
             if (_persistentTxs.Count != 0)
             {
-                bool hasBeenRemoved = _persistentTxs.TryRemove(txHash, out Transaction _);
+                bool hasBeenRemoved = _persistentTxs.TryRemove(txHash, out Transaction? _);
                 if (hasBeenRemoved)
                 {
                     if (_logger.IsTrace) _logger.Trace(
@@ -207,55 +234,50 @@ namespace Nethermind.TxPool
                 }
             }
         }
-        
-        private void TimerOnElapsed(object sender, EventArgs args)
+
+        private void TimerOnElapsed(object? sender, EventArgs args)
         {
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
             void NotifyPeers()
             {
                 _txsToSend = Interlocked.Exchange(ref _accumulatedTemporaryTxs, _txsToSend);
-            
+
                 if (_logger.IsDebug) _logger.Debug($"Broadcasting transactions to all peers");
 
                 foreach ((_, ITxPoolPeer peer) in _peers)
                 {
-                    Notify(peer, GetTxsToSend(peer, _txsToSend), false);
+                    Notify(peer, _txsToSend, false);
                 }
 
                 _txsToSend.Reset();
             }
-            
+
             NotifyPeers();
             _timer.Enabled = true;
         }
 
-        private IEnumerable<Transaction> GetTxsToSend(ITxPoolPeer peer, IList<Transaction> txsToSend)
+
+        private void Notify(ITxPoolPeer peer, IEnumerable<Transaction> txs, bool sendFullTx)
         {
-            for (int index = 0; index < txsToSend.Count; index++)
+            if (_txGossipPolicy.CanGossipTransactions)
             {
-                Transaction tx = txsToSend[index];
-                if (tx.DeliveredBy is null || !tx.DeliveredBy.Equals(peer.Id))
+                try
                 {
-                    yield return tx;
+
+                    peer.SendNewTransactions(txs.Where(t => _txGossipPolicy.ShouldGossipTransaction(t)), sendFullTx);
+                    if (_logger.IsTrace) _logger.Trace($"Notified {peer} about transactions.");
+                }
+                catch (Exception e)
+                {
+                    if (_logger.IsError) _logger.Error($"Failed to notify {peer} about transactions.", e);
                 }
             }
         }
 
-        private void Notify(ITxPoolPeer peer, IEnumerable<Transaction> txs, bool sendFullTx)
-        {
-            try
-            {
-                peer.SendNewTransactions(txs, sendFullTx);
-                if (_logger.IsTrace) _logger.Trace($"Notified {peer} about transactions.");
-            }
-            catch (Exception e)
-            {
-                if (_logger.IsError) _logger.Error($"Failed to notify {peer} about transactions.", e);
-            }
-        }
-        
         private void NotifyPeersAboutLocalTx(Transaction tx)
         {
+            if (!_txGossipPolicy.CanGossipTransactions || !_txGossipPolicy.ShouldGossipTransaction(tx)) return;
+
             if (_logger.IsDebug) _logger.Debug($"Broadcasting new local transaction {tx.Hash} to all peers");
 
             foreach ((_, ITxPoolPeer peer) in _peers)
@@ -270,6 +292,11 @@ namespace Nethermind.TxPool
                     if (_logger.IsError) _logger.Error($"Failed to notify {peer} about transaction {tx.Hash}.", e);
                 }
             }
+        }
+
+        public bool TryGetPersistentTx(Keccak hash, out Transaction? transaction)
+        {
+            return _persistentTxs.TryGetValue(hash, out transaction);
         }
 
         public bool AddPeer(ITxPoolPeer peer)
