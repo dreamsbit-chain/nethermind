@@ -15,7 +15,7 @@ namespace Nethermind.Core;
 /// </summary>
 public class OwnedBlockBodies : IDisposable
 {
-    private BlockBody?[]? _rawBodies = null;
+    private readonly BlockBody?[]? _rawBodies = null;
 
     private IMemoryOwner<byte>? _memoryOwner = null;
 
@@ -32,15 +32,15 @@ public class OwnedBlockBodies : IDisposable
     /// </summary>
     public void Disown()
     {
-        if (_memoryOwner == null) return;
+        if (_memoryOwner is null) return;
 
         foreach (BlockBody? blockBody in Bodies)
         {
-            if (blockBody == null) continue;
+            if (blockBody is null) continue;
             foreach (Transaction tx in blockBody.Transactions)
             {
-                Keccak? _ = tx.Hash; // Just need to trigger hash calculation
-                if (tx.Data != null)
+                Hash256? _ = tx.Hash; // Just need to trigger hash calculation
+                if (tx.Data is not null)
                 {
                     tx.Data = tx.Data.Value.ToArray();
                 }
@@ -53,11 +53,11 @@ public class OwnedBlockBodies : IDisposable
 
     public void Dispose()
     {
-        if (_memoryOwner == null) return;
+        if (_memoryOwner is null) return;
 
         foreach (BlockBody? blockBody in Bodies)
         {
-            if (blockBody == null) continue;
+            if (blockBody is null) continue;
             foreach (Transaction tx in blockBody.Transactions)
             {
                 TxDecoder.TxObjectPool.Return(tx);

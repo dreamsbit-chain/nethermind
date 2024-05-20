@@ -14,7 +14,7 @@ public class GethLikeTxMemoryTracer : GethLikeTxTracer<GethTxMemoryTraceEntry>
 {
     public GethLikeTxMemoryTracer(GethTraceOptions options) : base(options) => IsTracingMemory = IsTracingFullMemory;
 
-    public override void MarkAsSuccess(Address recipient, long gasSpent, byte[] output, LogEntry[] logs, Keccak? stateRoot = null)
+    public override void MarkAsSuccess(Address recipient, long gasSpent, byte[] output, LogEntry[] logs, Hash256? stateRoot = null)
     {
         base.MarkAsSuccess(recipient, gasSpent, output, logs, stateRoot);
 
@@ -34,12 +34,12 @@ public class GethLikeTxMemoryTracer : GethLikeTxTracer<GethTxMemoryTraceEntry>
             .ToHexString(false);
     }
 
-    public override void StartOperation(int depth, long gas, Instruction opcode, int pc, bool isPostMerge)
+    public override void StartOperation(int pc, Instruction opcode, long gas, in ExecutionEnvironment env)
     {
         var previousTraceEntry = CurrentTraceEntry;
         var previousDepth = CurrentTraceEntry?.Depth ?? 0;
 
-        base.StartOperation(depth, gas, opcode, pc, isPostMerge);
+        base.StartOperation(pc, opcode, gas, env);
 
         if (CurrentTraceEntry.Depth > previousDepth)
         {
@@ -62,8 +62,4 @@ public class GethLikeTxMemoryTracer : GethLikeTxTracer<GethTxMemoryTraceEntry>
             CurrentTraceEntry.Storage = new Dictionary<string, string>(previousTraceEntry.Storage);
         }
     }
-
-    protected override void AddTraceEntry(GethTxMemoryTraceEntry entry) => Trace.Entries.Add(entry);
-
-    protected override GethTxMemoryTraceEntry CreateTraceEntry(Instruction opcode) => new();
 }

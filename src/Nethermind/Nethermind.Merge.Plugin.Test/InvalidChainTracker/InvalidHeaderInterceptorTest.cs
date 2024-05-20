@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2022 Demerzel Solutions Limited
 // SPDX-License-Identifier: LGPL-3.0-only
 
+using System;
 using Nethermind.Consensus.Validators;
 using Nethermind.Core;
 using Nethermind.Core.Crypto;
@@ -16,7 +17,9 @@ namespace Nethermind.Merge.Plugin.Test;
 public class InvalidHeaderInterceptorTest
 {
     private IHeaderValidator _baseValidator = null!;
+#pragma warning disable NUnit1032
     private IInvalidChainTracker _tracker = null!;
+#pragma warning restore NUnit1032
     private InvalidHeaderInterceptor _invalidHeaderInterceptor = null!;
 
     [SetUp]
@@ -30,12 +33,15 @@ public class InvalidHeaderInterceptorTest
             NullLogManager.Instance);
     }
 
+    [TearDown]
+    public void TearDown() => (_invalidHeaderInterceptor as IDisposable)?.Dispose();
+
     [TestCase(true, false)]
     [TestCase(false, true)]
     public void TestValidateHeader(bool baseReturnValue, bool isInvalidBlockReported)
     {
         BlockHeader header = Build.A.BlockHeader.TestObject;
-        _baseValidator.Validate(header, false).Returns(baseReturnValue);
+        _baseValidator.Validate(header, false, out string? error).Returns(baseReturnValue);
         _invalidHeaderInterceptor.Validate(header, false);
 
         _tracker.Received().SetChildParent(header.GetOrCalculateHash(), header.ParentHash!);
@@ -57,8 +63,7 @@ public class InvalidHeaderInterceptorTest
         BlockHeader header = Build.A.BlockHeader
             .WithParent(parent)
             .TestObject;
-
-        _baseValidator.Validate(header, parent, false).Returns(baseReturnValue);
+        _baseValidator.Validate(header, parent, false, out string? error).Returns(baseReturnValue);
         _invalidHeaderInterceptor.Validate(header, parent, false);
 
         _tracker.Received().SetChildParent(header.GetOrCalculateHash(), header.ParentHash!);

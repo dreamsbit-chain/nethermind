@@ -24,8 +24,8 @@ namespace Nethermind.Store.Test
     [TestFixture, Parallelizable(ParallelScope.All)]
     public class StateProviderTests
     {
-        private static readonly Keccak Hash1 = Keccak.Compute("1");
-        private static readonly Keccak Hash2 = Keccak.Compute("2");
+        private static readonly Hash256 Hash1 = Keccak.Compute("1");
+        private static readonly Hash256 Hash2 = Keccak.Compute("2");
         private readonly Address _address1 = new(Hash1);
         private static readonly ILogManager Logger = LimboLogs.Instance;
         private IDb _codeDb;
@@ -35,6 +35,9 @@ namespace Nethermind.Store.Test
         {
             _codeDb = new MemDb();
         }
+
+        [TearDown]
+        public void TearDown() => _codeDb?.Dispose();
 
         [Test]
         public void Eip_158_zero_value_transfer_deletes()
@@ -82,18 +85,6 @@ namespace Nethermind.Store.Test
 
             string state = provider.DumpState();
             state.Should().NotBeEmpty();
-        }
-
-        [Test]
-        public void Can_collect_stats()
-        {
-            WorldState provider = new(new TrieStore(new MemDb(), Logger), _codeDb, Logger);
-            provider.CreateAccount(TestItem.AddressA, 1.Ether());
-            provider.Commit(MuirGlacier.Instance);
-            provider.CommitTree(0);
-
-            var stats = provider.CollectStats(_codeDb, Logger);
-            stats.AccountCount.Should().Be(1);
         }
 
         [Test]

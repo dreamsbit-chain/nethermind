@@ -2,12 +2,14 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 
 using System;
+using System.Threading;
+using System.Threading.Tasks;
 using Nethermind.Core;
 using Nethermind.Core.Crypto;
 
 namespace Nethermind.Trie.Pruning
 {
-    public class NullTrieStore : IReadOnlyTrieStore
+    public class NullTrieStore : IScopedTrieStore
     {
         private NullTrieStore() { }
 
@@ -17,26 +19,23 @@ namespace Nethermind.Trie.Pruning
 
         public void FinishBlockCommit(TrieType trieType, long blockNumber, TrieNode? root, WriteFlags flags = WriteFlags.None) { }
 
-        public void HackPersistOnShutdown() { }
+        public TrieNode FindCachedOrUnknown(in TreePath treePath, Hash256 hash) => new(NodeType.Unknown, hash);
 
-        public IReadOnlyTrieStore AsReadOnly(IKeyValueStore keyValueStore) => this;
+        public byte[] LoadRlp(in TreePath treePath, Hash256 hash, ReadFlags flags = ReadFlags.None) => Array.Empty<byte>();
 
-        public event EventHandler<ReorgBoundaryReached> ReorgBoundaryReached
+        public byte[]? TryLoadRlp(in TreePath path, Hash256 hash, ReadFlags flags = ReadFlags.None) => Array.Empty<byte>();
+
+        public bool IsPersisted(in TreePath path, in ValueHash256 keccak) => true;
+
+        public void Set(in TreePath path, in ValueHash256 keccak, byte[] rlp)
         {
-            add { }
-            remove { }
         }
 
-        public IKeyValueStore AsKeyValueStore() => null!;
+        public ITrieNodeResolver GetStorageTrieNodeResolver(Hash256 storageRoot)
+        {
+            return this;
+        }
 
-        public TrieNode FindCachedOrUnknown(Keccak hash) => new(NodeType.Unknown, hash);
-
-        public byte[] LoadRlp(Keccak hash, ReadFlags flags = ReadFlags.None) => Array.Empty<byte>();
-
-        public bool IsPersisted(in ValueKeccak keccak) => true;
-
-        public void Dispose() { }
-
-        public byte[]? Get(ReadOnlySpan<byte> key, ReadFlags flags = ReadFlags.None) => null;
+        public INodeStorage.KeyScheme Scheme => INodeStorage.KeyScheme.HalfPath;
     }
 }

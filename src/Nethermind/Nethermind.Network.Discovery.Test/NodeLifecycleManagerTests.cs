@@ -41,9 +41,9 @@ namespace Nethermind.Network.Discovery.Test
         private IDiscoveryConfig _discoveryConfigMock = null!;
         private INodeTable _nodeTable = null!;
         private IEvictionManager _evictionManagerMock = null!;
-        private ILogger _loggerMock = null!;
-        private int _port = 1;
-        private string _host = "192.168.1.27";
+        private ILogger _loggerMock = default;
+        private readonly int _port = 1;
+        private readonly string _host = "192.168.1.27";
 
         [SetUp]
         public void Setup()
@@ -55,7 +55,7 @@ namespace Nethermind.Network.Discovery.Test
             SetupNodeIds();
 
             LimboLogs? logManager = LimboLogs.Instance;
-            _loggerMock = Substitute.For<ILogger>();
+            _loggerMock = new(Substitute.For<InterfaceLogger>());
             //setting config to store 3 nodes in a bucket and for table to have one bucket//setting config to store 3 nodes in a bucket and for table to have one bucket
 
             IConfigProvider configurationProvider = new ConfigProvider();
@@ -97,7 +97,7 @@ namespace Nethermind.Network.Discovery.Test
 
             byte[] mdc = new byte[32];
             PingMsg? sentPing = null;
-            _discoveryManagerMock.SendMessage(Arg.Do<PingMsg>(msg =>
+            await _discoveryManagerMock.SendMessageAsync(Arg.Do<PingMsg>(msg =>
             {
                 msg.Mdc = mdc;
                 sentPing = msg;
@@ -168,7 +168,7 @@ namespace Nethermind.Network.Discovery.Test
                 .Received(0)
                 .GetNodeLifecycleManager(Arg.Any<Node>(), Arg.Any<bool>());
 
-            nodeManager.SendFindNode(Array.Empty<byte>());
+            await nodeManager.SendFindNode(Array.Empty<byte>());
 
             Node[] firstNodes = TestItem.PublicKeys
                 .Take(12)
@@ -388,7 +388,7 @@ namespace Nethermind.Network.Discovery.Test
         {
             byte[] mdc = new byte[32];
             PingMsg? sentPing = null;
-            _discoveryManagerMock.SendMessage(Arg.Do<PingMsg>(msg =>
+            await _discoveryManagerMock.SendMessageAsync(Arg.Do<PingMsg>(msg =>
             {
                 msg.Mdc = mdc;
                 sentPing = msg;

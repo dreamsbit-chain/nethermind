@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 
 using Nethermind.Core.Crypto;
+using Nethermind.Core.Extensions;
 using Nethermind.Network.P2P.Subprotocols.Eth.V66.Messages;
 using NUnit.Framework;
 
@@ -14,11 +15,11 @@ namespace Nethermind.Network.Test.P2P.Subprotocols.Eth.V66
         [Test]
         public void RoundTrip()
         {
-            Keccak a = new("0x00000000000000000000000000000000000000000000000000000000deadc0de");
-            Keccak b = new("0x00000000000000000000000000000000000000000000000000000000feedbeef");
+            Hash256 a = new("0x00000000000000000000000000000000000000000000000000000000deadc0de");
+            Hash256 b = new("0x00000000000000000000000000000000000000000000000000000000feedbeef");
 
-            Keccak[] hashes = { a, b };
-            var ethMessage = new Network.P2P.Subprotocols.Eth.V63.Messages.GetReceiptsMessage(hashes);
+            Hash256[] hashes = { a, b };
+            var ethMessage = new Network.P2P.Subprotocols.Eth.V63.Messages.GetReceiptsMessage(hashes.ToPooledList());
 
             GetReceiptsMessage message = new(1111, ethMessage);
 

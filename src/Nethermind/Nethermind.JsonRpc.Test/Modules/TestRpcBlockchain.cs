@@ -14,7 +14,6 @@ using Nethermind.Core.Specs;
 using Nethermind.Core.Test.Blockchain;
 using Nethermind.Core.Test.Builders;
 using Nethermind.Crypto;
-using Nethermind.Db;
 using Nethermind.Facade;
 using Nethermind.JsonRpc.Modules;
 using Nethermind.JsonRpc.Modules.Eth;
@@ -26,12 +25,12 @@ using Nethermind.JsonRpc.Modules.Eth.FeeHistory;
 using Nethermind.KeyStore;
 using Nethermind.Specs;
 using Nethermind.Specs.Forks;
-using Nethermind.Trie.Pruning;
 using Nethermind.TxPool;
 using Nethermind.Wallet;
-using Newtonsoft.Json;
+
 using Nethermind.Config;
 using Nethermind.Synchronization.ParallelSync;
+using NSubstitute;
 
 namespace Nethermind.JsonRpc.Test.Modules
 {
@@ -123,8 +122,7 @@ namespace Nethermind.JsonRpc.Test.Modules
             IFilterManager filterManager = new FilterManager(filterStore, BlockProcessor, TxPool, LimboLogs.Instance);
 
             ReadOnlyTxProcessingEnv processingEnv = new(
-                new ReadOnlyDbProvider(DbProvider, false),
-                new TrieStore(DbProvider.StateDb, LimboLogs.Instance).AsReadOnly(),
+                WorldStateManager,
                 new ReadOnlyBlockTree(BlockTree),
                 SpecProvider,
                 LimboLogs.Instance);
@@ -139,12 +137,13 @@ namespace Nethermind.JsonRpc.Test.Modules
             TxSealer = new TxSealer(txSigner, Timestamper);
             TxSender ??= new TxPoolSender(TxPool, TxSealer, NonceManager, EthereumEcdsa ?? new EthereumEcdsa(specProvider.ChainId, LogManager));
             GasPriceOracle ??= new GasPriceOracle(BlockFinder, SpecProvider, LogManager);
-            FeeHistoryOracle ??= new FeeHistoryOracle(BlockFinder, ReceiptStorage, SpecProvider);
+            FeeHistoryOracle ??= new FeeHistoryOracle(BlockTree, ReceiptStorage, SpecProvider);
             ISyncConfig syncConfig = new SyncConfig();
             EthRpcModule = new EthRpcModule(
                 RpcConfig,
                 Bridge,
                 BlockFinder,
+                ReceiptFinder,
                 StateReader,
                 TxPool,
                 TxSender,
@@ -152,16 +151,17 @@ namespace Nethermind.JsonRpc.Test.Modules
                 LimboLogs.Instance,
                 SpecProvider,
                 GasPriceOracle,
-                new EthSyncingInfo(BlockTree, ReceiptStorage, syncConfig, new StaticSelector(SyncMode.All), LogManager),
+                new EthSyncingInfo(BlockTree, ReceiptStorage, syncConfig,
+                    new StaticSelector(SyncMode.All), Substitute.For<ISyncProgressResolver>(), LogManager),
                 FeeHistoryOracle);
 
             return this;
         }
 
         public Task<string> TestEthRpc(string method, params string[] parameters) =>
-            RpcTest.TestSerializedRequest(EthModuleFactory.Converters, EthRpcModule, method, parameters);
+            RpcTest.TestSerializedRequest(EthRpcModule, method, parameters);
 
         public Task<string> TestSerializedRequest<T>(T module, string method, params string[] parameters) where T : class, IRpcModule =>
-            RpcTest.TestSerializedRequest(Array.Empty<JsonConverter>(), module, method, parameters);
+            RpcTest.TestSerializedRequest(module, method, parameters);
     }
 }

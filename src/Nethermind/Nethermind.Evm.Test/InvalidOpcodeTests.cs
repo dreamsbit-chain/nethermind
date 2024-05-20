@@ -112,7 +112,7 @@ namespace Nethermind.Evm.Test
                 }
             ).ToArray();
 
-        private Dictionary<ForkActivation, Instruction[]> _validOpcodes
+        private readonly Dictionary<ForkActivation, Instruction[]> _validOpcodes
             = new()
             {
                 {(ForkActivation)0, FrontierInstructions},
@@ -132,11 +132,11 @@ namespace Nethermind.Evm.Test
 
         private const string InvalidOpCodeErrorMessage = "BadInstruction";
 
-        private ILogManager _logManager;
+        private ILogManager _logManager = LimboLogs.Instance;
 
         protected override ILogManager GetLogManager()
         {
-            _logManager ??= new OneLoggerLogManager(new NUnitLogger(LogLevel.Trace));
+            _logManager ??= new OneLoggerLogManager(new(new NUnitLogger(LogLevel.Trace)));
             return _logManager;
         }
 
@@ -150,8 +150,8 @@ namespace Nethermind.Evm.Test
         [TestCase(MainnetSpecProvider.MuirGlacierBlockNumber)]
         [TestCase(MainnetSpecProvider.BerlinBlockNumber)]
         [TestCase(MainnetSpecProvider.LondonBlockNumber)]
-        [TestCase(MainnetSpecProvider.GrayGlacierBlockNumber + 1, MainnetSpecProvider.ShanghaiBlockTimestamp)]
-        [TestCase(MainnetSpecProvider.GrayGlacierBlockNumber + 2, MainnetSpecProvider.CancunBlockTimestamp)]
+        [TestCase(MainnetSpecProvider.ParisBlockNumber + 1, MainnetSpecProvider.ShanghaiBlockTimestamp)]
+        [TestCase(MainnetSpecProvider.ParisBlockNumber + 2, MainnetSpecProvider.CancunBlockTimestamp)]
         [TestCase(long.MaxValue, ulong.MaxValue)]
         public void Test(long blockNumber, ulong? timestamp = null)
         {

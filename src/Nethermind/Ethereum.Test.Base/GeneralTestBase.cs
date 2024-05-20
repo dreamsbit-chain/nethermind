@@ -4,11 +4,14 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using Nethermind.Blockchain;
+using Nethermind.Consensus.Ethash;
 using Nethermind.Consensus.Validators;
 using Nethermind.Core;
 using Nethermind.Core.Crypto;
 using Nethermind.Core.Extensions;
 using Nethermind.Core.Specs;
+using Nethermind.Core.Test.Builders;
 using Nethermind.Crypto;
 using Nethermind.Db;
 using Nethermind.Int256;
@@ -27,9 +30,10 @@ namespace Ethereum.Test.Base
 {
     public abstract class GeneralStateTestBase
     {
-        private static ILogger _logger = new ConsoleAsyncLogger(LogLevel.Info);
+        private static ILogger _logger = new(new ConsoleAsyncLogger(LogLevel.Info));
         private static ILogManager _logManager = LimboLogs.Instance;
         private static UInt256 _defaultBaseFeeForStateTest = 0xA;
+        private readonly TxValidator _txValidator = new(MainnetSpecProvider.Instance.ChainId);
 
         [SetUp]
         public void Setup()
@@ -80,22 +84,57 @@ namespace Ethereum.Test.Base
 
             InitializeTestState(test, stateProvider, specProvider);
 
-            BlockHeader header = new(test.PreviousHash, Keccak.OfAnEmptySequenceRlp, test.CurrentCoinbase,
-                test.CurrentDifficulty, test.CurrentNumber, test.CurrentGasLimit, test.CurrentTimestamp, Array.Empty<byte>());
+            BlockHeader header = new(
+                test.PreviousHash,
+                Keccak.OfAnEmptySequenceRlp,
+                test.CurrentCoinbase,
+                test.CurrentDifficulty,
+                test.CurrentNumber,
+                test.CurrentGasLimit,
+                test.CurrentTimestamp,
+                Array.Empty<byte>());
             header.BaseFeePerGas = test.Fork.IsEip1559Enabled ? test.CurrentBaseFee ?? _defaultBaseFeeForStateTest : UInt256.Zero;
             header.StateRoot = test.PostHash;
             header.Hash = header.CalculateHash();
             header.IsPostMerge = test.CurrentRandom is not null;
             header.MixHash = test.CurrentRandom;
+            header.WithdrawalsRoot = test.CurrentWithdrawalsRoot;
+            header.ParentBeaconBlockRoot = test.CurrentBeaconRoot;
+            header.ExcessBlobGas = test.CurrentExcessBlobGas;
+            header.BlobGasUsed = BlobGasCalculator.CalculateBlobGas(test.Transaction);
 
             Stopwatch stopwatch = Stopwatch.StartNew();
-            TxValidator? txValidator = new((MainnetSpecProvider.Instance.ChainId));
             IReleaseSpec? spec = specProvider.GetSpec((ForkActivation)test.CurrentNumber);
+
+            if (spec is Cancun) KzgPolynomialCommitments.InitializeAsync();
+
             if (test.Transaction.ChainId == null)
                 test.Transaction.ChainId = MainnetSpecProvider.Instance.ChainId;
-            bool isValid = txValidator.IsWellFormed(test.Transaction, spec);
+            if (test.ParentBlobGasUsed is not null && test.ParentExcessBlobGas is not null)
+            {
+                BlockHeader parent = new(
+                    parentHash: Keccak.Zero,
+                    unclesHash: Keccak.OfAnEmptySequenceRlp,
+                    beneficiary: test.CurrentCoinbase,
+                    difficulty: test.CurrentDifficulty,
+                    number: test.CurrentNumber - 1,
+                    gasLimit: test.CurrentGasLimit,
+                    timestamp: test.CurrentTimestamp,
+                    extraData: Array.Empty<byte>()
+                )
+                {
+                    BlobGasUsed = (ulong)test.ParentBlobGasUsed,
+                    ExcessBlobGas = (ulong)test.ParentExcessBlobGas,
+                };
+                header.ExcessBlobGas = BlobGasCalculator.CalculateExcessBlobGas(parent, spec);
+            }
+
+            Block block = Build.A.Block.WithTransactions(test.Transaction).WithHeader(header).TestObject;
+
+            bool isValid = _txValidator.IsWellFormed(test.Transaction, spec) && IsValidBlock(block, specProvider);
+
             if (isValid)
-                transactionProcessor.Execute(test.Transaction, header, txTracer);
+                transactionProcessor.Execute(test.Transaction, new BlockExecutionContext(header), txTracer);
             stopwatch.Stop();
 
             stateProvider.Commit(specProvider.GenesisSpec);
@@ -112,7 +151,7 @@ namespace Ethereum.Test.Base
 
             List<string> differences = RunAssertions(test, stateProvider);
             EthereumTestResult testResult = new(test.Name, test.ForkName, differences.Count == 0);
-            testResult.TimeInMs = (int)stopwatch.Elapsed.TotalMilliseconds;
+            testResult.TimeInMs = stopwatch.Elapsed.TotalMilliseconds;
             testResult.StateRoot = stateProvider.StateRoot;
 
             //            Assert.Zero(differences.Count, "differences");
@@ -137,6 +176,22 @@ namespace Ethereum.Test.Base
             stateProvider.Commit(specProvider.GenesisSpec);
             stateProvider.CommitTree(0);
             stateProvider.Reset();
+        }
+
+        private bool IsValidBlock(Block block, ISpecProvider specProvider)
+        {
+            IBlockTree blockTree = Build.A.BlockTree()
+                .WithSpecProvider(specProvider)
+                .WithoutSettingHead
+                .TestObject;
+
+            var difficultyCalculator = new EthashDifficultyCalculator(specProvider);
+            var sealer = new EthashSealValidator(_logManager, difficultyCalculator, new CryptoRandom(), new Ethash(_logManager), Timestamper.Default);
+            IHeaderValidator headerValidator = new HeaderValidator(blockTree, sealer, specProvider, _logManager);
+            IUnclesValidator unclesValidator = new UnclesValidator(blockTree, headerValidator, _logManager);
+            IBlockValidator blockValidator = new BlockValidator(_txValidator, headerValidator, unclesValidator, specProvider, _logManager);
+
+            return blockValidator.ValidateOrphanedBlock(block, out _);
         }
 
         private List<string> RunAssertions(GeneralStateTest test, IWorldState stateProvider)

@@ -4,7 +4,7 @@
 using System;
 using System.Buffers;
 using System.Diagnostics;
-using System.Linq;
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using Nethermind.Core.Buffers;
 using Nethermind.Core.Crypto;
@@ -23,27 +23,11 @@ namespace Nethermind.Trie
 
         private class TrieNodeDecoder
         {
-            public CappedArray<byte> Encode(ITrieNodeResolver tree, TrieNode? item, ICappedArrayPool? bufferPool)
+            [SkipLocalsInit]
+            public static CappedArray<byte> EncodeExtension(TrieNode item, ITrieNodeResolver tree, ref TreePath path, ICappedArrayPool? bufferPool)
             {
                 Metrics.TreeNodeRlpEncodings++;
 
-                if (item is null)
-                {
-                    throw new TrieException("An attempt was made to RLP encode a null node.");
-                }
-
-                return item.NodeType switch
-                {
-                    NodeType.Branch => RlpEncodeBranch(tree, item, bufferPool),
-                    NodeType.Extension => EncodeExtension(tree, item, bufferPool),
-                    NodeType.Leaf => EncodeLeaf(item, bufferPool),
-                    _ => throw new TrieException($"An attempt was made to encode a trie node of type {item.NodeType}")
-                };
-            }
-
-            [SkipLocalsInit]
-            private static CappedArray<byte> EncodeExtension(ITrieNodeResolver tree, TrieNode item, ICappedArrayPool? bufferPool)
-            {
                 Debug.Assert(item.NodeType == NodeType.Extension,
                     $"Node passed to {nameof(EncodeExtension)} is {item.NodeType}");
                 Debug.Assert(item.Key is not null,
@@ -61,11 +45,13 @@ namespace Nethermind.Trie
 
                 HexPrefix.CopyToSpan(hexPrefix, isLeaf: false, keyBytes);
 
-                TrieNode nodeRef = item.GetChild(tree, 0);
+                int previousLength = item.AppendChildPath(ref path, 0);
+                TrieNode nodeRef = item.GetChildWithChildPath(tree, ref path, 0);
                 Debug.Assert(nodeRef is not null,
                     "Extension child is null when encoding.");
 
-                nodeRef.ResolveKey(tree, false, bufferPool: bufferPool);
+                nodeRef.ResolveKey(tree, ref path, false, bufferPool: bufferPool);
+                path.TruncateMut(previousLength);
 
                 int contentLength = Rlp.LengthOf(keyBytes) + (nodeRef.Keccak is null ? nodeRef.FullRlp.Length : Rlp.LengthOfKeccakRlp);
                 int totalLength = Rlp.LengthOfSequence(contentLength);
@@ -97,11 +83,13 @@ namespace Nethermind.Trie
             }
 
             [SkipLocalsInit]
-            private static CappedArray<byte> EncodeLeaf(TrieNode node, ICappedArrayPool? pool)
+            public static CappedArray<byte> EncodeLeaf(TrieNode node, ICappedArrayPool? pool)
             {
+                Metrics.TreeNodeRlpEncodings++;
+
                 if (node.Key is null)
                 {
-                    throw new TrieException($"Hex prefix of a leaf node is null at node {node.Keccak}");
+                    ThrowNullKey(node);
                 }
 
                 byte[] hexPrefix = node.Key;
@@ -130,15 +118,24 @@ namespace Nethermind.Trie
                 return data;
             }
 
-            private static CappedArray<byte> RlpEncodeBranch(ITrieNodeResolver tree, TrieNode item, ICappedArrayPool? pool)
+            [DoesNotReturn]
+            [StackTraceHidden]
+            private static void ThrowNullKey(TrieNode node)
             {
+                throw new TrieException($"Hex prefix of a leaf node is null at node {node.Keccak}");
+            }
+
+            public static CappedArray<byte> RlpEncodeBranch(TrieNode item, ITrieNodeResolver tree, ref TreePath path, ICappedArrayPool? pool)
+            {
+                Metrics.TreeNodeRlpEncodings++;
+
                 int valueRlpLength = AllowBranchValues ? Rlp.LengthOf(item.Value.AsSpan()) : 1;
-                int contentLength = valueRlpLength + GetChildrenRlpLength(tree, item, pool);
+                int contentLength = valueRlpLength + GetChildrenRlpLengthForBranch(tree, ref path, item, pool);
                 int sequenceLength = Rlp.LengthOfSequence(contentLength);
                 CappedArray<byte> result = pool.SafeRentBuffer(sequenceLength);
                 Span<byte> resultSpan = result.AsSpan();
                 int position = Rlp.StartSequence(resultSpan, 0, contentLength);
-                WriteChildrenRlp(tree, item, resultSpan.Slice(position, contentLength - valueRlpLength), pool);
+                WriteChildrenRlpBranch(tree, ref path, item, resultSpan.Slice(position, contentLength - valueRlpLength), pool);
                 position = sequenceLength - valueRlpLength;
                 if (AllowBranchValues)
                 {
@@ -152,74 +149,174 @@ namespace Nethermind.Trie
                 return result;
             }
 
-            private static int GetChildrenRlpLength(ITrieNodeResolver tree, TrieNode item, ICappedArrayPool? bufferPool)
+            private static int GetChildrenRlpLengthForBranch(ITrieNodeResolver tree, ref TreePath path, TrieNode item, ICappedArrayPool? bufferPool)
+            {
+                item.EnsureInitialized();
+                // Tail call optimized.
+                if (item.HasRlp)
+                {
+                    return GetChildrenRlpLengthForBranchRlp(tree, ref path, item, bufferPool);
+                }
+                else
+                {
+                    return GetChildrenRlpLengthForBranchNonRlp(tree, ref path, item, bufferPool);
+                }
+            }
+
+            private static int GetChildrenRlpLengthForBranchNonRlp(ITrieNodeResolver tree, ref TreePath path, TrieNode item, ICappedArrayPool bufferPool)
             {
                 int totalLength = 0;
-                item.InitData();
-                item.SeekChild(0);
                 for (int i = 0; i < BranchesCount; i++)
                 {
-                    if (item._rlpStream is not null && item._data![i] is null)
+                    object data = item._data[i];
+                    if (ReferenceEquals(data, _nullNode) || data is null)
                     {
-                        (int prefixLength, int contentLength) = item._rlpStream.PeekPrefixAndContentLength();
-                        totalLength += prefixLength + contentLength;
+                        totalLength++;
+                    }
+                    else if (data is Hash256)
+                    {
+                        totalLength += Rlp.LengthOfKeccakRlp;
                     }
                     else
                     {
-                        if (ReferenceEquals(item._data![i], _nullNode) || item._data[i] is null)
+                        path.AppendMut(i);
+                        TrieNode childNode = (TrieNode)data;
+                        childNode.ResolveKey(tree, ref path, isRoot: false, bufferPool: bufferPool);
+                        path.TruncateOne();
+                        totalLength += childNode.Keccak is null ? childNode.FullRlp.Length : Rlp.LengthOfKeccakRlp;
+                    }
+                }
+                return totalLength;
+            }
+
+            private static int GetChildrenRlpLengthForBranchRlp(ITrieNodeResolver tree, ref TreePath path, TrieNode item, ICappedArrayPool? bufferPool)
+            {
+                int totalLength = 0;
+                ValueRlpStream rlpStream = item.RlpStream;
+                item.SeekChild(ref rlpStream, 0);
+                for (int i = 0; i < BranchesCount; i++)
+                {
+                    object data = item._data[i];
+                    if (data is null)
+                    {
+                        int length = rlpStream.PeekNextRlpLength();
+                        totalLength += length;
+                        rlpStream.SkipBytes(length);
+                    }
+                    else
+                    {
+                        if (ReferenceEquals(data, _nullNode) || data is null)
                         {
                             totalLength++;
                         }
-                        else if (item._data[i] is Keccak)
+                        else if (data is Hash256)
                         {
                             totalLength += Rlp.LengthOfKeccakRlp;
                         }
                         else
                         {
-                            TrieNode childNode = (TrieNode)item._data[i];
-                            childNode!.ResolveKey(tree, false, bufferPool: bufferPool);
+                            path.AppendMut(i);
+                            Debug.Assert(data is TrieNode, "Data is not TrieNode");
+                            TrieNode childNode = Unsafe.As<TrieNode>(data);
+                            childNode.ResolveKey(tree, ref path, isRoot: false, bufferPool: bufferPool);
+                            path.TruncateOne();
                             totalLength += childNode.Keccak is null ? childNode.FullRlp.Length : Rlp.LengthOfKeccakRlp;
                         }
-                    }
 
-                    item._rlpStream?.SkipItem();
+                        rlpStream.SkipItem();
+                    }
                 }
 
                 return totalLength;
             }
 
-            private static void WriteChildrenRlp(ITrieNodeResolver tree, TrieNode item, Span<byte> destination, ICappedArrayPool? bufferPool)
+            private static void WriteChildrenRlpBranch(ITrieNodeResolver tree, ref TreePath path, TrieNode item, Span<byte> destination, ICappedArrayPool? bufferPool)
+            {
+                item.EnsureInitialized();
+                // Tail call optimized.
+                if (item.HasRlp)
+                {
+                    WriteChildrenRlpBranchRlp(tree, ref path, item, destination, bufferPool);
+                }
+                else
+                {
+                    WriteChildrenRlpBranchNonRlp(tree, ref path, item, destination, bufferPool);
+                }
+            }
+
+            private static void WriteChildrenRlpBranchNonRlp(ITrieNodeResolver tree, ref TreePath path, TrieNode item, Span<byte> destination, ICappedArrayPool? bufferPool)
             {
                 int position = 0;
-                RlpStream rlpStream = item._rlpStream;
-                item.InitData();
-                item.SeekChild(0);
                 for (int i = 0; i < BranchesCount; i++)
                 {
-                    if (rlpStream is not null && item._data![i] is null)
+                    object data = item._data[i];
+                    if (ReferenceEquals(data, _nullNode) || data is null)
+                    {
+                        destination[position++] = 128;
+                    }
+                    else if (data is Hash256 hash)
+                    {
+                        position = Rlp.Encode(destination, position, hash);
+                    }
+                    else
+                    {
+                        path.AppendMut(i);
+                        Debug.Assert(data is TrieNode, "Data is not TrieNode");
+                        TrieNode childNode = Unsafe.As<TrieNode>(data);
+                        childNode!.ResolveKey(tree, ref path, isRoot: false, bufferPool: bufferPool);
+                        path.TruncateOne();
+
+                        hash = childNode.Keccak;
+                        if (hash is null)
+                        {
+                            Span<byte> fullRlp = childNode.FullRlp!.AsSpan();
+                            fullRlp.CopyTo(destination.Slice(position, fullRlp.Length));
+                            position += fullRlp.Length;
+                        }
+                        else
+                        {
+                            position = Rlp.Encode(destination, position, hash);
+                        }
+                    }
+                }
+            }
+
+            private static void WriteChildrenRlpBranchRlp(ITrieNodeResolver tree, ref TreePath path, TrieNode item, Span<byte> destination, ICappedArrayPool? bufferPool)
+            {
+                ValueRlpStream rlpStream = item.RlpStream;
+                item.SeekChild(ref rlpStream, 0);
+                int position = 0;
+                for (int i = 0; i < BranchesCount; i++)
+                {
+                    object data = item._data[i];
+                    if (data is null)
                     {
                         int length = rlpStream.PeekNextRlpLength();
                         Span<byte> nextItem = rlpStream.Data.AsSpan(rlpStream.Position, length);
                         nextItem.CopyTo(destination.Slice(position, nextItem.Length));
                         position += nextItem.Length;
-                        rlpStream.SkipItem();
+                        rlpStream.SkipBytes(length);
                     }
                     else
                     {
-                        rlpStream?.SkipItem();
-                        if (ReferenceEquals(item._data![i], _nullNode) || item._data[i] is null)
+                        if (ReferenceEquals(data, _nullNode) || data is null)
                         {
                             destination[position++] = 128;
                         }
-                        else if (item._data[i] is Keccak)
+                        else if (data is Hash256 hash)
                         {
-                            position = Rlp.Encode(destination, position, (item._data[i] as Keccak)!.Bytes);
+                            position = Rlp.Encode(destination, position, hash);
                         }
                         else
                         {
-                            TrieNode childNode = (TrieNode)item._data[i];
-                            childNode!.ResolveKey(tree, false, bufferPool: bufferPool);
-                            if (childNode.Keccak is null)
+                            path.AppendMut(i);
+                            Debug.Assert(data is TrieNode, "Data is not TrieNode");
+                            TrieNode childNode = Unsafe.As<TrieNode>(data);
+                            childNode!.ResolveKey(tree, ref path, isRoot: false, bufferPool: bufferPool);
+                            path.TruncateOne();
+
+                            hash = childNode.Keccak;
+                            if (hash is null)
                             {
                                 Span<byte> fullRlp = childNode.FullRlp!.AsSpan();
                                 fullRlp.CopyTo(destination.Slice(position, fullRlp.Length));
@@ -227,9 +324,11 @@ namespace Nethermind.Trie
                             }
                             else
                             {
-                                position = Rlp.Encode(destination, position, childNode.Keccak.Bytes);
+                                position = Rlp.Encode(destination, position, hash);
                             }
                         }
+
+                        rlpStream.SkipItem();
                     }
                 }
             }

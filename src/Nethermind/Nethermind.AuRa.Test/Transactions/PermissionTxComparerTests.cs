@@ -27,7 +27,7 @@ namespace Nethermind.AuRa.Test.Transactions
 {
     public class PermissionTxComparerTests
     {
-        private static Address[] WhitelistedSenders = new[] { TestItem.AddressC, TestItem.AddressD };
+        private static readonly Address[] WhitelistedSenders = new[] { TestItem.AddressC, TestItem.AddressD };
 
         public static IEnumerable OrderingTests
         {
@@ -269,9 +269,9 @@ namespace Nethermind.AuRa.Test.Transactions
                 .ThenBy(defaultComparer);
 
 
-            Dictionary<Address?, Transaction[]> txBySender = transactions.GroupBy(t => t.SenderAddress)
+            Dictionary<AddressAsKey, Transaction[]> txBySender = transactions.GroupBy(t => t.SenderAddress)
                 .ToDictionary(
-                    g => g.Key,
+                    g => (AddressAsKey)g.Key,
                     g => g.OrderBy(t => t,
                         // to simulate order coming from TxPool
                         comparer.GetPoolUniqueTxComparerByNonce()).ToArray());

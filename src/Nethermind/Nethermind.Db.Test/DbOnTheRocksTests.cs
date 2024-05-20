@@ -13,6 +13,7 @@ using FluentAssertions;
 using Nethermind.Core;
 using Nethermind.Core.Buffers;
 using Nethermind.Core.Crypto;
+using Nethermind.Core.Exceptions;
 using Nethermind.Core.Extensions;
 using Nethermind.Db.Rocks;
 using Nethermind.Db.Rocks.Config;
@@ -20,6 +21,7 @@ using Nethermind.Logging;
 using NSubstitute;
 using NUnit.Framework;
 using RocksDbSharp;
+using IWriteBatch = Nethermind.Core.IWriteBatch;
 
 namespace Nethermind.Db.Test
 {
@@ -58,6 +60,22 @@ namespace Nethermind.Db.Test
             options = db.WriteFlagsToWriteOptions(WriteFlags.DisableWAL);
             Native.Instance.rocksdb_writeoptions_get_low_pri(options.Handle).Should().BeFalse();
             Native.Instance.rocksdb_writeoptions_get_disable_WAL(options.Handle).Should().BeTrue();
+        }
+
+        [Test]
+        public void Throws_whenMaxWriteBufferNumIs0()
+        {
+            IDbConfig config = new DbConfig();
+            DbSettings settings = new("Blocks", DbPath)
+            {
+                BlockCacheSize = (ulong)1.KiB(),
+                CacheIndexAndFilterBlocks = false,
+                WriteBufferNumber = 0,
+                WriteBufferSize = (ulong)1.KiB()
+            };
+
+            Action act = () => new DbOnTheRocks(DbPath, settings, config, LimboLogs.Instance);
+            act.Should().Throw<InvalidConfigurationException>();
         }
 
         [Test]
@@ -107,8 +125,26 @@ namespace Nethermind.Db.Test
         {
             IDbConfig config = new DbConfig();
             DbOnTheRocks db = new("testDispose2", GetRocksDbSettings("testDispose2", "TestDispose2"), config, LimboLogs.Instance);
-            IBatch batch = db.StartBatch();
+            IWriteBatch writeBatch = db.StartWriteBatch();
             db.Dispose();
+        }
+
+        [Test]
+        public void CanOpenWithFileWarmer()
+        {
+            IDbConfig config = new DbConfig();
+            config.EnableFileWarmer = true;
+            {
+                using DbOnTheRocks db = new("testFileWarmer", GetRocksDbSettings("testFileWarmer", "FileWarmerTest"), config, LimboLogs.Instance);
+                for (int i = 0; i < 1000; i++)
+                {
+                    db[i.ToBigEndianByteArray()] = i.ToBigEndianByteArray();
+                }
+            }
+
+            {
+                using DbOnTheRocks db = new("testFileWarmer", GetRocksDbSettings("testFileWarmer", "FileWarmerTest"), config, LimboLogs.Instance);
+            }
         }
 
         [Test]
@@ -165,7 +201,7 @@ namespace Nethermind.Db.Test
             file.Received().Delete(markerFile);
         }
 
-        private static RocksDbSettings GetRocksDbSettings(string dbPath, string dbName)
+        private static DbSettings GetRocksDbSettings(string dbPath, string dbName)
         {
             return new(dbName, dbPath)
             {
@@ -183,10 +219,10 @@ namespace Nethermind.Db.Test
     public class DbOnTheRocksDbTests
     {
         string DbPath => "testdb/" + TestContext.CurrentContext.Test.Name;
-        private IDbWithSpan _db = null!;
+        private IDb _db = null!;
         IDisposable? _dbDisposable = null!;
 
-        private bool _useColumnDb = false;
+        private readonly bool _useColumnDb = false;
 
         public DbOnTheRocksDbTests(bool useColumnDb)
         {
@@ -219,9 +255,23 @@ namespace Nethermind.Db.Test
             }
         }
 
+        private long AllocatedSpan
+        {
+            get
+            {
+                if (_db is ColumnDb columnDb)
+                {
+                    return columnDb._mainDb._allocatedSpan;
+                }
+
+                return (_db as DbOnTheRocks)._allocatedSpan;
+            }
+        }
+
         [TearDown]
         public void TearDown()
         {
+            _db?.Dispose();
             _dbDisposable?.Dispose();
         }
 
@@ -236,10 +286,39 @@ namespace Nethermind.Db.Test
         }
 
         [Test]
+        public void Smoke_test_large_writes_with_nowal()
+        {
+            IWriteBatch writeBatch = _db.StartWriteBatch();
+
+            for (int i = 0; i < 1000; i++)
+            {
+                writeBatch.Set(i.ToBigEndianByteArray(), i.ToBigEndianByteArray(), WriteFlags.DisableWAL);
+            }
+
+            writeBatch.Dispose();
+
+            for (int i = 0; i < 1000; i++)
+            {
+                _db[i.ToBigEndianByteArray()].Should().BeEquivalentTo(i.ToBigEndianByteArray());
+            }
+        }
+
+        [Test]
         public void Smoke_test_readahead()
         {
             _db[new byte[] { 1, 2, 3 }] = new byte[] { 4, 5, 6 };
             Assert.That(_db.Get(new byte[] { 1, 2, 3 }, ReadFlags.HintReadAhead), Is.EqualTo(new byte[] { 4, 5, 6 }));
+        }
+
+        [Test]
+        public void Smoke_test_many_readahead()
+        {
+            _db[new byte[] { 1, 2, 3 }] = new byte[] { 4, 5, 6 };
+            // Attempt to trigger auto dispose iterator on many usage
+            for (int i = 0; i < 1200000; i++)
+            {
+                Assert.That(_db.Get(new byte[] { 1, 2, 3 }, ReadFlags.HintReadAhead), Is.EqualTo(new byte[] { 4, 5, 6 }));
+            }
         }
 
         [Test]
@@ -250,7 +329,10 @@ namespace Nethermind.Db.Test
             _db.PutSpan(key, value);
             Span<byte> readSpan = _db.GetSpan(key);
             Assert.That(readSpan.ToArray(), Is.EqualTo(new byte[] { 4, 5, 6 }));
+
+            AllocatedSpan.Should().Be(1);
             _db.DangerousReleaseMemory(readSpan);
+            AllocatedSpan.Should().Be(0);
         }
 
         [Test]
@@ -265,10 +347,13 @@ namespace Nethermind.Db.Test
             IMemoryOwner<byte> manager = new DbSpanMemoryManager(_db, readSpan);
             Memory<byte> theMemory = manager.Memory;
             Assert.That(theMemory.ToArray(), Is.EqualTo(new byte[] { 4, 5, 6 }));
+
+            AllocatedSpan.Should().Be(1);
             manager.Dispose();
+            AllocatedSpan.Should().Be(0);
         }
 
-        private static RocksDbSettings GetRocksDbSettings(string dbPath, string dbName)
+        private static DbSettings GetRocksDbSettings(string dbPath, string dbName)
         {
             return new(dbName, dbPath)
             {
@@ -301,13 +386,13 @@ namespace Nethermind.Db.Test
     {
         public CorruptedDbOnTheRocks(
             string basePath,
-            RocksDbSettings rocksDbSettings,
+            DbSettings dbSettings,
             IDbConfig dbConfig,
             ILogManager logManager,
             IList<string>? columnFamilies = null,
             RocksDbSharp.Native? rocksDbNative = null,
             IFileSystem? fileSystem = null
-        ) : base(basePath, rocksDbSettings, dbConfig, logManager, columnFamilies, rocksDbNative, fileSystem)
+        ) : base(basePath, dbSettings, dbConfig, logManager, columnFamilies, rocksDbNative, fileSystem)
         {
         }
 

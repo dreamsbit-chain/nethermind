@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 
 using System;
+using System.Collections.Generic;
 using System.Numerics;
 using Nethermind.Core;
 using Nethermind.Core.Crypto;
@@ -65,10 +66,13 @@ public class VirtualMachineTestsBase
         ITrieStore trieStore = new TrieStore(_stateDb, logManager);
         TestState = new WorldState(trieStore, codeDb, logManager);
         _ethereumEcdsa = new EthereumEcdsa(SpecProvider.ChainId, logManager);
-        IBlockhashProvider blockhashProvider = TestBlockhashProvider.Instance;
+        IBlockhashProvider blockhashProvider = new TestBlockhashProvider(SpecProvider);
         Machine = new VirtualMachine(blockhashProvider, SpecProvider, logManager);
         _processor = new TransactionProcessor(SpecProvider, TestState, Machine, logManager);
     }
+
+    [TearDown]
+    public virtual void TearDown() => _stateDb?.Dispose();
 
     protected GethLikeTxTrace ExecuteAndTrace(params byte[] code)
     {
@@ -116,6 +120,18 @@ public class VirtualMachineTestsBase
     }
 
     protected virtual TestAllTracerWithOutput CreateTracer() => new();
+
+
+    protected T ExecuteBlock<T>(T tracer, byte[] code, ForkActivation? forkActivation = null) where T : IBlockTracer
+    {
+        (Block block, Transaction transaction) = PrepareTx(forkActivation ?? Activation, 100000, code);
+        tracer.StartNewBlockTrace(block);
+        ITxTracer txTracer = tracer.StartNewTxTrace(transaction);
+        _processor.Execute(transaction, block.Header, txTracer);
+        tracer.EndTxTrace();
+        tracer.EndBlockTrace();
+        return tracer;
+    }
 
     protected T Execute<T>(T tracer, byte[] code, ForkActivation? forkActivation = null) where T : ITxTracer
     {
@@ -310,7 +326,7 @@ public class VirtualMachineTestsBase
         Assert.That(TestState.Get(new StorageCell(Recipient, address)).PadLeft(32), Is.EqualTo(value.Bytes.PadLeft(32)), "storage");
     }
 
-    protected void AssertStorage(UInt256 address, Keccak value)
+    protected void AssertStorage(UInt256 address, Hash256 value)
     {
         Assert.That(TestState.Get(new StorageCell(Recipient, address)).PadLeft(32), Is.EqualTo(value.BytesToArray()), "storage");
     }
@@ -322,7 +338,7 @@ public class VirtualMachineTestsBase
 
     protected void AssertStorage(UInt256 address, BigInteger expectedValue)
     {
-        byte[] actualValue = TestState.Get(new StorageCell(Recipient, address));
+        byte[] actualValue = TestState.Get(new StorageCell(Recipient, address)).ToArray();
         byte[] expected = expectedValue < 0 ? expectedValue.ToBigEndianByteArray(32) : expectedValue.ToBigEndianByteArray();
         Assert.That(actualValue, Is.EqualTo(expected), "storage");
     }
@@ -331,7 +347,7 @@ public class VirtualMachineTestsBase
     {
         byte[] bytes = ((BigInteger)expectedValue).ToBigEndianByteArray();
 
-        byte[] actualValue = TestState.Get(new StorageCell(Recipient, address));
+        byte[] actualValue = TestState.Get(new StorageCell(Recipient, address)).ToArray();
         Assert.That(actualValue, Is.EqualTo(bytes), "storage");
     }
 
@@ -346,12 +362,12 @@ public class VirtualMachineTestsBase
         }
         else
         {
-            byte[] actualValue = TestState.Get(storageCell);
+            byte[] actualValue = TestState.Get(storageCell).ToArray();
             Assert.That(actualValue, Is.EqualTo(expectedValue.ToBigEndian().WithoutLeadingZeros().ToArray()), $"storage {storageCell}, call {_callIndex}");
         }
     }
 
-    protected void AssertCodeHash(Address address, Keccak codeHash)
+    protected void AssertCodeHash(Address address, Hash256 codeHash)
     {
         Assert.That(TestState.GetCodeHash(address), Is.EqualTo(codeHash), "code hash");
     }

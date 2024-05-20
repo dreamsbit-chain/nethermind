@@ -15,33 +15,33 @@ namespace Nethermind.Synchronization.Trie;
 /// <summary>
 /// Trie store that can recover from network using eth63-eth66 protocol and GetNodeData.
 /// </summary>
-public class HealingTrieStore : TrieStore
+public sealed class HealingTrieStore : TrieStore
 {
-    private ITrieNodeRecovery<IReadOnlyList<Keccak>>? _recovery;
+    private ITrieNodeRecovery<IReadOnlyList<Hash256>>? _recovery;
 
     public HealingTrieStore(
-        IKeyValueStoreWithBatching? keyValueStore,
+        INodeStorage nodeStorage,
         IPruningStrategy? pruningStrategy,
         IPersistenceStrategy? persistenceStrategy,
         ILogManager? logManager)
-        : base(keyValueStore, pruningStrategy, persistenceStrategy, logManager)
+        : base(nodeStorage, pruningStrategy, persistenceStrategy, logManager)
     {
     }
 
-    public void InitializeNetwork(ITrieNodeRecovery<IReadOnlyList<Keccak>> recovery)
+    public void InitializeNetwork(ITrieNodeRecovery<IReadOnlyList<Hash256>> recovery)
     {
         _recovery = recovery;
     }
 
-    public override byte[] LoadRlp(Keccak keccak, ReadFlags readFlags = ReadFlags.None)
+    public override byte[]? LoadRlp(Hash256? address, in TreePath path, Hash256 keccak, ReadFlags readFlags = ReadFlags.None)
     {
         try
         {
-            return base.LoadRlp(keccak, readFlags);
+            return base.LoadRlp(address, path, keccak, readFlags);
         }
         catch (TrieNodeException)
         {
-            if (TryRecover(keccak, out byte[] rlp))
+            if (TryRecover(address, path, keccak, out byte[] rlp))
             {
                 return rlp;
             }
@@ -50,15 +50,15 @@ public class HealingTrieStore : TrieStore
         }
     }
 
-    private bool TryRecover(Keccak rlpHash, [NotNullWhen(true)] out byte[]? rlp)
+    private bool TryRecover(Hash256? address, in TreePath path, Hash256 rlpHash, [NotNullWhen(true)] out byte[]? rlp)
     {
         if (_recovery?.CanRecover == true)
         {
-            using ArrayPoolList<Keccak> request = new(1) { rlpHash };
+            using ArrayPoolList<Hash256> request = new(1) { rlpHash };
             rlp = _recovery.Recover(rlpHash, request).GetAwaiter().GetResult();
             if (rlp is not null)
             {
-                _keyValueStore.Set(rlpHash.Bytes, rlp);
+                _nodeStorage.Set(address, path, rlpHash, rlp);
                 return true;
             }
         }

@@ -46,7 +46,7 @@ namespace Nethermind.Serialization.Rlp
             }
             else
             {
-                txReceipt.PostTransactionState = firstItem.Length == 0 ? null : new Keccak(firstItem);
+                txReceipt.PostTransactionState = firstItem.Length == 0 ? null : new Hash256(firstItem);
             }
 
             if (isStorage) txReceipt.BlockHash = rlpStream.DecodeKeccak();
@@ -121,7 +121,7 @@ namespace Nethermind.Serialization.Rlp
             }
             else
             {
-                txReceipt.PostTransactionState = firstItem.Length == 0 ? null : new Keccak(firstItem);
+                txReceipt.PostTransactionState = firstItem.Length == 0 ? null : new Hash256(firstItem);
             }
 
             if (isStorage) txReceipt.BlockHash = decoderContext.DecodeKeccak();
@@ -175,7 +175,7 @@ namespace Nethermind.Serialization.Rlp
         {
             RlpStream rlpStream = new(GetLength(item, rlpBehaviors));
             Encode(rlpStream, item, rlpBehaviors);
-            return new Rlp(rlpStream.Data);
+            return new Rlp(rlpStream.Data.ToArray());
         }
 
         public void Encode(RlpStream rlpStream, TxReceipt? item, RlpBehaviors rlpBehaviors = RlpBehaviors.None)
@@ -226,9 +226,10 @@ namespace Nethermind.Serialization.Rlp
 
                 rlpStream.StartSequence(logsLength);
 
-                for (int i = 0; i < item.Logs.Length; i++)
+                LogEntry[] logs = item.Logs;
+                for (int i = 0; i < logs.Length; i++)
                 {
-                    rlpStream.Encode(item.Logs[i]);
+                    rlpStream.Encode(logs[i]);
                 }
 
                 if (_supportTxHash)
@@ -246,16 +247,17 @@ namespace Nethermind.Serialization.Rlp
 
                 rlpStream.StartSequence(logsLength);
 
-                for (int i = 0; i < item.Logs.Length; i++)
+                LogEntry[] logs = item.Logs;
+                for (int i = 0; i < logs.Length; i++)
                 {
-                    rlpStream.Encode(item.Logs[i]);
+                    rlpStream.Encode(logs[i]);
                 }
 
                 rlpStream.Encode(item.Error);
             }
         }
 
-        private (int Total, int Logs) GetContentLength(TxReceipt? item, RlpBehaviors rlpBehaviors)
+        private static (int Total, int Logs) GetContentLength(TxReceipt? item, RlpBehaviors rlpBehaviors)
         {
             int contentLength = 0;
             if (item is null)
@@ -299,7 +301,7 @@ namespace Nethermind.Serialization.Rlp
             return (contentLength, logsLength);
         }
 
-        private int GetLogsLength(TxReceipt item)
+        private static int GetLogsLength(TxReceipt item)
         {
             int logsLength = 0;
             for (int i = 0; i < item.Logs.Length; i++)
@@ -346,7 +348,7 @@ namespace Nethermind.Serialization.Rlp
             }
 
             decoderContext.ReadSequenceLength();
-            Span<byte> firstItem = decoderContext.DecodeByteArraySpan();
+            ReadOnlySpan<byte> firstItem = decoderContext.DecodeByteArraySpan();
             if (firstItem.Length == 1)
             {
                 item.StatusCode = firstItem[0];
@@ -354,7 +356,7 @@ namespace Nethermind.Serialization.Rlp
             else
             {
                 item.PostTransactionState =
-                    firstItem.Length == 0 ? new KeccakStructRef() : new KeccakStructRef(firstItem);
+                    firstItem.Length == 0 ? new Hash256StructRef() : new Hash256StructRef(firstItem);
             }
 
             if (isStorage)
@@ -403,7 +405,7 @@ namespace Nethermind.Serialization.Rlp
             LogEntryDecoder.DecodeStructRef(ref decoderContext, behaviour, out current);
         }
 
-        public Keccak[] DecodeTopics(Rlp.ValueDecoderContext valueDecoderContext)
+        public Hash256[] DecodeTopics(Rlp.ValueDecoderContext valueDecoderContext)
         {
             return KeccakDecoder.Instance.DecodeArray(ref valueDecoderContext);
         }

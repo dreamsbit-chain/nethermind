@@ -26,7 +26,7 @@ public partial class EngineRpcModule : IEngineRpcModule
         IAsyncHandler<byte[], GetPayloadV3Result?> getPayloadHandlerV3,
         IAsyncHandler<ExecutionPayload, PayloadStatusV1> newPayloadV1Handler,
         IForkchoiceUpdatedHandler forkchoiceUpdatedV1Handler,
-        IAsyncHandler<IList<Keccak>, IEnumerable<ExecutionPayloadBodyV1Result?>> executionGetPayloadBodiesByHashV1Handler,
+        IAsyncHandler<IList<Hash256>, IEnumerable<ExecutionPayloadBodyV1Result?>> executionGetPayloadBodiesByHashV1Handler,
         IGetPayloadBodiesByRangeV1Handler executionGetPayloadBodiesByRangeV1Handler,
         IHandler<TransitionConfigurationV1, TransitionConfigurationV1> transitionConfigurationHandler,
         IHandler<IEnumerable<string>, IEnumerable<string>> capabilitiesHandler,
@@ -50,4 +50,9 @@ public partial class EngineRpcModule : IEngineRpcModule
 
     public ResultWrapper<IEnumerable<string>> engine_exchangeCapabilities(IEnumerable<string> methods)
         => _capabilitiesHandler.Handle(methods);
+
+    public ResultWrapper<ClientVersionV1[]> engine_getClientVersionV1(ClientVersionV1 clientVersionV1)
+    {
+        return ResultWrapper<ClientVersionV1[]>.Success([new ClientVersionV1()]);
+    }
 }

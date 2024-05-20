@@ -3,9 +3,12 @@
 
 using System;
 using System.Buffers;
+using System.Collections.Generic;
+using System.Linq;
 using Nethermind.Core;
 using Nethermind.Core.Caching;
 using Nethermind.Core.Crypto;
+using Nethermind.Core.Extensions;
 using Nethermind.Db;
 using Nethermind.Serialization.Rlp;
 
@@ -14,21 +17,17 @@ namespace Nethermind.Blockchain.Blocks;
 public class BlockStore : IBlockStore
 {
     private readonly IDb _blockDb;
-    private readonly IDbWithSpan? _blockDbAsSpan;
     private readonly BlockDecoder _blockDecoder = new();
     private const int CacheSize = 128 + 32;
 
-    private readonly LruCache<ValueKeccak, Block>
+    private readonly LruCache<ValueHash256, Block>
         _blockCache = new(CacheSize, CacheSize, "blocks");
+    private readonly long? _maxSize;
 
-    public BlockStore(IDb blockDb)
+    public BlockStore(IDb blockDb, long? maxSize = null)
     {
         _blockDb = blockDb;
-
-        if (blockDb is IDbWithSpan blockDbAsSpan)
-            _blockDbAsSpan = blockDbAsSpan;
-        else
-            _blockDbAsSpan = null;
+        _maxSize = maxSize;
     }
 
     public void SetMetadata(byte[] key, byte[] value)
@@ -41,50 +40,85 @@ public class BlockStore : IBlockStore
         return _blockDb.Get(key);
     }
 
-    public void Insert(Block block)
+    private void TruncateToMaxSize()
+    {
+        int toDelete = (int)(_blockDb.GatherMetric().Size - _maxSize!);
+        if (toDelete > 0)
+        {
+            foreach (var blockToDelete in GetAll().Take(toDelete))
+            {
+                Delete(blockToDelete.Number, blockToDelete.Hash);
+            }
+        }
+    }
+
+    public void Insert(Block block, WriteFlags writeFlags = WriteFlags.None)
     {
         if (block.Hash is null)
         {
             throw new InvalidOperationException("An attempt to store a block with a null hash.");
         }
 
-        // if we carry Rlp from the network message all the way here then we could solve 4GB of allocations and some processing
-        // by avoiding encoding back to RLP here (allocations measured on a sample 3M blocks Goerli fast sync
+        // if we carry Rlp from the network message all the way here we could avoid encoding back to RLP here
+        // Although cpu is the main bottleneck since NettyRlpStream uses pooled memory which avoid unnecessary allocations..
         using NettyRlpStream newRlp = _blockDecoder.EncodeToNewNettyStream(block);
-        _blockDb.Set(block.Hash, newRlp.AsSpan());
+
+        _blockDb.Set(block.Number, block.Hash, newRlp.AsSpan(), writeFlags);
+
+        if (_maxSize is not null)
+        {
+            TruncateToMaxSize();
+        }
     }
 
-    public void Delete(Keccak blockHash)
+    private static void GetBlockNumPrefixedKey(long blockNumber, Hash256 blockHash, Span<byte> output)
     {
-        _blockDb.Delete(blockHash);
+        blockNumber.WriteBigEndian(output);
+        blockHash!.Bytes.CopyTo(output[8..]);
+    }
+
+    public void Delete(long blockNumber, Hash256 blockHash)
+    {
         _blockCache.Delete(blockHash);
+        _blockDb.Delete(blockNumber, blockHash);
+        _blockDb.Remove(blockHash.Bytes);
     }
 
-    public Block? Get(Keccak blockHash, bool shouldCache)
+    public Block? Get(long blockNumber, Hash256 blockHash, RlpBehaviors rlpBehaviors = RlpBehaviors.None, bool shouldCache = false)
     {
-
-        return _blockDb.Get(blockHash, _blockDecoder, _blockCache, shouldCache);
+        Block? b = _blockDb.Get(blockNumber, blockHash, _blockDecoder, _blockCache, rlpBehaviors, shouldCache);
+        if (b is not null) return b;
+        return _blockDb.Get(blockHash, _blockDecoder, _blockCache, rlpBehaviors, shouldCache);
     }
 
-    public ReceiptRecoveryBlock? GetReceiptRecoveryBlock(Keccak blockHash)
+    public byte[]? GetRaw(long blockNumber, Hash256 blockHash)
     {
-        MemoryManager<byte>? memoryOwner = null;
-        Memory<byte> memory;
-        if (_blockDbAsSpan != null)
-        {
-            memoryOwner = _blockDbAsSpan.GetOwnedMemory(blockHash.Bytes);
-            memory = memoryOwner.Memory;
-        }
-        else
-        {
-            memory = _blockDb.Get(blockHash.Bytes);
-        }
+        Span<byte> dbKey = stackalloc byte[40];
+        KeyValueStoreExtensions.GetBlockNumPrefixedKey(blockNumber, blockHash, dbKey);
+        var b = _blockDb.Get(dbKey);
+        if (b is not null) return b;
+        return _blockDb.Get(blockHash);
+    }
 
-        return _blockDecoder.DecodeToReceiptRecoveryBlock(memoryOwner, memory, RlpBehaviors.None);
+    public ReceiptRecoveryBlock? GetReceiptRecoveryBlock(long blockNumber, Hash256 blockHash)
+    {
+        Span<byte> keyWithBlockNumber = stackalloc byte[40];
+        GetBlockNumPrefixedKey(blockNumber, blockHash, keyWithBlockNumber);
+
+        MemoryManager<byte>? memoryOwner = _blockDb.GetOwnedMemory(keyWithBlockNumber);
+        memoryOwner ??= _blockDb.GetOwnedMemory(blockHash.Bytes);
+
+        return BlockDecoder.DecodeToReceiptRecoveryBlock(memoryOwner, memoryOwner?.Memory ?? Memory<byte>.Empty, RlpBehaviors.None);
     }
 
     public void Cache(Block block)
     {
         _blockCache.Set(block.Hash, block);
     }
+
+    public IEnumerable<Block> GetAll()
+    {
+        return _blockDb.GetAllValues(true).Select(bytes => _blockDecoder.Decode(bytes.AsRlpStream()));
+    }
+
 }

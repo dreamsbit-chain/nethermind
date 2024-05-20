@@ -13,8 +13,8 @@ public class PerTableDbConfigTests
     public void CanReadAllConfigForAllTable()
     {
         DbConfig dbConfig = new DbConfig();
-        string[] tables = new[]
-        {
+        string[] tables =
+        [
             DbNames.Storage,
             DbNames.State,
             DbNames.Code,
@@ -23,14 +23,12 @@ public class PerTableDbConfigTests
             DbNames.Receipts,
             DbNames.BlockInfos,
             DbNames.Bloom,
-            DbNames.Witness,
-            DbNames.CHT,
-            DbNames.Metadata,
-        };
+            DbNames.Metadata
+        ];
 
         foreach (string table in tables)
         {
-            PerTableDbConfig config = new PerTableDbConfig(dbConfig, new RocksDbSettings(table, ""));
+            PerTableDbConfig config = new PerTableDbConfig(dbConfig, new DbSettings(table, ""));
 
             object _ = config.CacheIndexAndFilterBlocks;
             _ = config.BlockCacheSize;
@@ -47,7 +45,7 @@ public class PerTableDbConfigTests
         dbConfig.MaxOpenFiles = 2;
         dbConfig.ReceiptsDbMaxOpenFiles = 3;
 
-        PerTableDbConfig config = new PerTableDbConfig(dbConfig, new RocksDbSettings(DbNames.Receipts, ""));
+        PerTableDbConfig config = new PerTableDbConfig(dbConfig, new DbSettings(DbNames.Receipts, ""));
         config.MaxOpenFiles.Should().Be(3);
     }
 
@@ -57,7 +55,7 @@ public class PerTableDbConfigTests
         DbConfig dbConfig = new DbConfig();
         dbConfig.MaxOpenFiles = 2;
 
-        PerTableDbConfig config = new PerTableDbConfig(dbConfig, new RocksDbSettings(DbNames.Receipts, ""));
+        PerTableDbConfig config = new PerTableDbConfig(dbConfig, new DbSettings(DbNames.Receipts, ""));
         config.MaxOpenFiles.Should().Be(2);
     }
 }

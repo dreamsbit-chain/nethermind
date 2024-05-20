@@ -6,6 +6,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Nethermind.Blockchain.Synchronization;
 using Nethermind.Logging;
+using Nethermind.Network.Contract.P2P;
 using Nethermind.Synchronization.ParallelSync;
 using Nethermind.Synchronization.Peers;
 
@@ -13,7 +14,7 @@ namespace Nethermind.Synchronization.SnapSync
 {
     public class SnapSyncDownloader : ISyncDownloader<SnapSyncBatch>
     {
-        private ILogger Logger;
+        private readonly ILogger Logger;
 
         public SnapSyncDownloader(ILogManager? logManager)
         {
@@ -24,8 +25,7 @@ namespace Nethermind.Synchronization.SnapSync
         {
             ISyncPeer peer = peerInfo.SyncPeer;
 
-            //TODO: replace with a constant "snap"
-            if (peer.TryGetSatelliteProtocol<ISnapSyncPeer>("snap", out var handler))
+            if (peer.TryGetSatelliteProtocol<ISnapSyncPeer>(Protocol.Snap, out var handler))
             {
                 try
                 {

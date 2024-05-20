@@ -22,7 +22,7 @@ namespace Nethermind.Evm.Tracing.Proofs
 
         public HashSet<StorageCell> Storages { get; } = new();
 
-        public HashSet<Keccak> BlockHashes { get; } = new();
+        public HashSet<Hash256> BlockHashes { get; } = new();
 
         public byte[]? Output { get; private set; }
 
@@ -31,14 +31,14 @@ namespace Nethermind.Evm.Tracing.Proofs
         public override bool IsTracingState => true;
         public override bool IsTracingStorage => true;
 
-        public override void ReportBlockHash(Keccak blockHash)
+        public override void ReportBlockHash(Hash256 blockHash)
         {
             BlockHashes.Add(blockHash);
         }
 
         public override void ReportBalanceChange(Address address, UInt256? before, UInt256? after)
         {
-            if (_treatSystemAccountDifferently && Address.SystemUser == address && before is null && after == UInt256.Zero)
+            if (_treatSystemAccountDifferently && Address.SystemUser == address && before is null && after?.IsZero != false)
             {
                 return;
             }
@@ -58,7 +58,7 @@ namespace Nethermind.Evm.Tracing.Proofs
 
         public override void ReportNonceChange(Address address, UInt256? before, UInt256? after)
         {
-            if (_treatSystemAccountDifferently && Address.SystemUser == address && before is null && after == UInt256.Zero)
+            if (_treatSystemAccountDifferently && Address.SystemUser == address && before is null && after?.IsZero != false)
             {
                 return;
             }
@@ -95,12 +95,12 @@ namespace Nethermind.Evm.Tracing.Proofs
             Accounts.Add(address);
         }
 
-        public override void MarkAsSuccess(Address recipient, long gasSpent, byte[] output, LogEntry[] logs, Keccak? stateRoot = null)
+        public override void MarkAsSuccess(Address recipient, long gasSpent, byte[] output, LogEntry[] logs, Hash256? stateRoot = null)
         {
             Output = output;
         }
 
-        public override void MarkAsFailed(Address recipient, long gasSpent, byte[] output, string error, Keccak? stateRoot = null)
+        public override void MarkAsFailed(Address recipient, long gasSpent, byte[] output, string error, Hash256? stateRoot = null)
         {
             Output = output;
         }

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2022 Demerzel Solutions Limited
 // SPDX-License-Identifier: LGPL-3.0-only
 
+using System;
 using System.Linq;
 using Nethermind.Consensus.Validators;
 using Nethermind.Core;
@@ -18,7 +19,9 @@ namespace Nethermind.Merge.Plugin.Test;
 public class InvalidBlockInterceptorTest
 {
     private IBlockValidator _baseValidator = null!;
+#pragma warning disable NUnit1032
     private IInvalidChainTracker _tracker = null!;
+#pragma warning restore NUnit1032
     private InvalidBlockInterceptor _invalidBlockInterceptor = null!;
 
     [SetUp]
@@ -32,13 +35,16 @@ public class InvalidBlockInterceptorTest
             NullLogManager.Instance);
     }
 
+    [TearDown]
+    public void TearDown() => (_invalidBlockInterceptor as IDisposable)?.Dispose();
+
     [TestCase(true, false)]
     [TestCase(false, true)]
     public void TestValidateSuggestedBlock(bool baseReturnValue, bool isInvalidBlockReported)
     {
         Block block = Build.A.Block.TestObject;
-        _baseValidator.ValidateSuggestedBlock(block).Returns(baseReturnValue);
-        _invalidBlockInterceptor.ValidateSuggestedBlock(block);
+        _baseValidator.ValidateSuggestedBlock(block, out _).Returns(baseReturnValue);
+        _invalidBlockInterceptor.ValidateSuggestedBlock(block, out _);
 
         _tracker.Received().SetChildParent(block.GetOrCalculateHash(), block.ParentHash!);
         if (isInvalidBlockReported)
@@ -58,7 +64,7 @@ public class InvalidBlockInterceptorTest
         Block block = Build.A.Block.TestObject;
         Block suggestedBlock = Build.A.Block.WithExtraData(new byte[] { 1 }).TestObject;
         TxReceipt[] txs = { };
-        _baseValidator.ValidateProcessedBlock(block, txs, suggestedBlock).Returns(baseReturnValue);
+        _baseValidator.ValidateProcessedBlock(block, txs, suggestedBlock, out string? error).Returns(baseReturnValue);
         _invalidBlockInterceptor.ValidateProcessedBlock(block, txs, suggestedBlock);
 
         _tracker.Received().SetChildParent(suggestedBlock.GetOrCalculateHash(), suggestedBlock.ParentHash!);
@@ -78,8 +84,8 @@ public class InvalidBlockInterceptorTest
         Block block = Build.A.Block.TestObject;
         block.Header.StateRoot = Keccak.Zero;
 
-        _baseValidator.ValidateSuggestedBlock(block).Returns(false);
-        _invalidBlockInterceptor.ValidateSuggestedBlock(block);
+        _baseValidator.ValidateSuggestedBlock(block, out _).Returns(false);
+        _invalidBlockInterceptor.ValidateSuggestedBlock(block, out _);
 
         _tracker.DidNotReceive().SetChildParent(block.GetOrCalculateHash(), block.ParentHash!);
         _tracker.DidNotReceive().OnInvalidBlock(block.GetOrCalculateHash(), block.ParentHash);
@@ -96,8 +102,8 @@ public class InvalidBlockInterceptorTest
             block.Transactions.Take(9).ToArray()
         ));
 
-        _baseValidator.ValidateSuggestedBlock(block).Returns(false);
-        _invalidBlockInterceptor.ValidateSuggestedBlock(block);
+        _baseValidator.ValidateSuggestedBlock(block, out _).Returns(false);
+        _invalidBlockInterceptor.ValidateSuggestedBlock(block, out _);
 
         _tracker.DidNotReceive().SetChildParent(block.GetOrCalculateHash(), block.ParentHash!);
         _tracker.DidNotReceive().OnInvalidBlock(block.GetOrCalculateHash(), block.ParentHash);
@@ -114,8 +120,8 @@ public class InvalidBlockInterceptorTest
             block.Withdrawals!.Take(8).ToArray()
         ));
 
-        _baseValidator.ValidateSuggestedBlock(block).Returns(false);
-        _invalidBlockInterceptor.ValidateSuggestedBlock(block);
+        _baseValidator.ValidateSuggestedBlock(block, out _).Returns(false);
+        _invalidBlockInterceptor.ValidateSuggestedBlock(block, out _);
 
         _tracker.DidNotReceive().SetChildParent(block.GetOrCalculateHash(), block.ParentHash!);
         _tracker.DidNotReceive().OnInvalidBlock(block.GetOrCalculateHash(), block.ParentHash);

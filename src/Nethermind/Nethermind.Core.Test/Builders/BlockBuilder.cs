@@ -7,6 +7,7 @@ using Nethermind.Core.Crypto;
 using Nethermind.Core.Specs;
 using Nethermind.Crypto;
 using Nethermind.Int256;
+using Nethermind.Serialization.Rlp;
 using Nethermind.State.Proofs;
 
 namespace Nethermind.Core.Test.Builders
@@ -95,9 +96,8 @@ namespace Nethermind.Core.Test.Builders
             }
 
             BlockBuilder result = WithTransactions(txs);
-            ReceiptTrie receiptTrie = new(specProvider.GetSpec(TestObjectInternal.Header), receipts);
-            receiptTrie.UpdateRootHash();
-            TestObjectInternal.Header.ReceiptsRoot = receiptTrie.RootHash;
+            Hash256 receiptHash = ReceiptTrie<TxReceipt>.CalculateRoot(specProvider.GetSpec(TestObjectInternal.Header), receipts, ReceiptMessageDecoder.Instance);
+            TestObjectInternal.Header.ReceiptsRoot = receiptHash;
             return result;
         }
 
@@ -105,14 +105,12 @@ namespace Nethermind.Core.Test.Builders
         {
             TestObjectInternal = TestObjectInternal.WithReplacedBody(
                 TestObjectInternal.Body.WithChangedTransactions(transactions));
-            TxTrie trie = new(transactions);
-            trie.UpdateRootHash();
 
-            TestObjectInternal.Header.TxRoot = trie.RootHash;
+            TestObjectInternal.Header.TxRoot = TxTrie.CalculateRoot(transactions);
             return this;
         }
 
-        public BlockBuilder WithTxRoot(Keccak txRoot)
+        public BlockBuilder WithTxRoot(Hash256 txRoot)
         {
             TestObjectInternal.Header.TxRoot = txRoot;
             return this;
@@ -148,7 +146,7 @@ namespace Nethermind.Core.Test.Builders
             return this;
         }
 
-        public BlockBuilder WithMixHash(Keccak mixHash)
+        public BlockBuilder WithMixHash(Hash256 mixHash)
         {
             TestObjectInternal.Header.MixHash = mixHash;
             return this;
@@ -197,19 +195,19 @@ namespace Nethermind.Core.Test.Builders
             return this;
         }
 
-        public BlockBuilder WithParentHash(Keccak parent)
+        public BlockBuilder WithParentHash(Hash256 parent)
         {
             TestObjectInternal.Header.ParentHash = parent;
             return this;
         }
 
-        public BlockBuilder WithStateRoot(Keccak stateRoot)
+        public BlockBuilder WithStateRoot(Hash256 stateRoot)
         {
             TestObjectInternal.Header.StateRoot = stateRoot;
             return this;
         }
 
-        public BlockBuilder WithWithdrawalsRoot(Keccak? withdrawalsRoot)
+        public BlockBuilder WithWithdrawalsRoot(Hash256? withdrawalsRoot)
         {
             TestObjectInternal.Header.WithdrawalsRoot = withdrawalsRoot;
 
@@ -243,7 +241,7 @@ namespace Nethermind.Core.Test.Builders
             TestObjectInternal.Header.Hash = TestObjectInternal.Header.CalculateHash();
         }
 
-        public BlockBuilder WithReceiptsRoot(Keccak keccak)
+        public BlockBuilder WithReceiptsRoot(Hash256 keccak)
         {
             TestObjectInternal.Header.ReceiptsRoot = keccak;
             return this;
@@ -277,7 +275,7 @@ namespace Nethermind.Core.Test.Builders
             return this;
         }
 
-        public BlockBuilder WithParentBeaconBlockRoot(Keccak? parentBeaconBlockRoot)
+        public BlockBuilder WithParentBeaconBlockRoot(Hash256? parentBeaconBlockRoot)
         {
             TestObjectInternal.Header.ParentBeaconBlockRoot = parentBeaconBlockRoot;
             return this;

@@ -3,32 +3,28 @@
 
 using System;
 using System.Buffers.Binary;
-using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Nethermind.Core;
-using Nethermind.Core.Extensions;
 using Nethermind.Int256;
 using Nethermind.Evm.Tracing;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.Intrinsics;
 using System.Diagnostics;
 using System.Runtime.Intrinsics.X86;
+using Nethermind.Core.Extensions;
 
 namespace Nethermind.Evm;
 
-using static Nethermind.Evm.VirtualMachine;
-
+using static VirtualMachine;
 using Word = Vector256<byte>;
 
 public ref struct EvmStack<TTracing>
     where TTracing : struct, IIsTracing
 {
-    public const int RegisterLength = 1;
-    public const int MaxStackSize = 1025;
-    public const int ReturnStackSize = 1023;
-    public const int WordSize = 32;
-    public const int AddressSize = 20;
+    public const int MaxStackSize = EvmStack.MaxStackSize;
+    public const int WordSize = EvmStack.WordSize;
+    public const int AddressSize = EvmStack.AddressSize;
 
     public EvmStack(scoped in Span<byte> bytes, scoped in int head, ITxTracer txTracer)
     {
@@ -39,11 +35,11 @@ public ref struct EvmStack<TTracing>
 
     public int Head;
 
-    private Span<byte> _bytes;
+    private readonly Span<byte> _bytes;
 
-    private ITxTracer _tracer;
+    private readonly ITxTracer _tracer;
 
-    public void PushBytes(scoped in Span<byte> value)
+    public void PushBytes(scoped ReadOnlySpan<byte> value)
     {
         if (typeof(TTracing) == typeof(IsTracing)) _tracer.ReportStackPush(value);
 
@@ -110,7 +106,7 @@ public ref struct EvmStack<TTracing>
         }
     }
 
-    private static ReadOnlySpan<byte> OneStackItem() => new byte[] { 1 };
+    private static ReadOnlySpan<byte> OneStackItem() => Bytes.OneByte.Span;
 
     public void PushOne()
     {
@@ -125,7 +121,7 @@ public ref struct EvmStack<TTracing>
         }
     }
 
-    private static ReadOnlySpan<byte> ZeroStackItem() => new byte[] { 0 };
+    private static ReadOnlySpan<byte> ZeroStackItem() => Bytes.ZeroByte.Span;
 
     public void PushZero()
     {
@@ -170,15 +166,23 @@ public ref struct EvmStack<TTracing>
 
         if (Avx2.IsSupported)
         {
-            Vector256<ulong> permute = Unsafe.As<UInt256, Vector256<ulong>>(ref Unsafe.AsRef(value));
-            Vector256<ulong> convert = Avx2.Permute4x64(permute, 0b_01_00_11_10);
             Word shuffle = Vector256.Create(
                 (byte)
                 31, 30, 29, 28, 27, 26, 25, 24,
                 23, 22, 21, 20, 19, 18, 17, 16,
                 15, 14, 13, 12, 11, 10, 9, 8,
                 7, 6, 5, 4, 3, 2, 1, 0);
-            Unsafe.WriteUnaligned(ref bytes, Avx2.Shuffle(Unsafe.As<Vector256<ulong>, Word>(ref convert), shuffle));
+            if (Avx512Vbmi.VL.IsSupported)
+            {
+                Word data = Unsafe.As<UInt256, Word>(ref Unsafe.AsRef(in value));
+                Unsafe.WriteUnaligned(ref bytes, Avx512Vbmi.VL.PermuteVar32x8(data, shuffle));
+            }
+            else if (Avx2.IsSupported)
+            {
+                Vector256<ulong> permute = Unsafe.As<UInt256, Vector256<ulong>>(ref Unsafe.AsRef(in value));
+                Vector256<ulong> convert = Avx2.Permute4x64(permute, 0b_01_00_11_10);
+                Unsafe.WriteUnaligned(ref bytes, Avx2.Shuffle(Unsafe.As<Vector256<ulong>, Word>(ref convert), shuffle));
+            }
         }
         else
         {
@@ -223,13 +227,6 @@ public ref struct EvmStack<TTracing>
         }
     }
 
-    public void PopSignedInt256(out Int256.Int256 result)
-    {
-        // tail call into UInt256
-        Unsafe.SkipInit(out result);
-        PopUInt256(out Unsafe.As<Int256.Int256, UInt256>(ref result));
-    }
-
     /// <summary>
     /// Pops an Uint256 written in big endian.
     /// </summary>
@@ -238,9 +235,11 @@ public ref struct EvmStack<TTracing>
     /// All it does is <see cref="Unsafe.ReadUnaligned{T}(ref byte)"/> and then reverse endianness if needed. Then it creates <paramref name="result"/>.
     /// </remarks>
     /// <param name="result">The returned value.</param>
-    public void PopUInt256(out UInt256 result)
+    public bool PopUInt256(out UInt256 result)
     {
+        Unsafe.SkipInit(out result);
         ref byte bytes = ref PopBytesByRef();
+        if (Unsafe.IsNullRef(ref bytes)) return false;
 
         if (Avx2.IsSupported)
         {
@@ -251,9 +250,17 @@ public ref struct EvmStack<TTracing>
                 23, 22, 21, 20, 19, 18, 17, 16,
                 15, 14, 13, 12, 11, 10, 9, 8,
                 7, 6, 5, 4, 3, 2, 1, 0);
-            Word convert = Avx2.Shuffle(data, shuffle);
-            Vector256<ulong> permute = Avx2.Permute4x64(Unsafe.As<Word, Vector256<ulong>>(ref convert), 0b_01_00_11_10);
-            result = Unsafe.As<Vector256<ulong>, UInt256>(ref permute);
+            if (Avx512Vbmi.VL.IsSupported)
+            {
+                Word convert = Avx512Vbmi.VL.PermuteVar32x8(data, shuffle);
+                result = Unsafe.As<Word, UInt256>(ref convert);
+            }
+            else
+            {
+                Word convert = Avx2.Shuffle(data, shuffle);
+                Vector256<ulong> permute = Avx2.Permute4x64(Unsafe.As<Word, Vector256<ulong>>(ref convert), 0b_01_00_11_10);
+                result = Unsafe.As<Vector256<ulong>, UInt256>(ref permute);
+            }
         }
         else
         {
@@ -276,9 +283,11 @@ public ref struct EvmStack<TTracing>
 
             result = new UInt256(u0, u1, u2, u3);
         }
+
+        return true;
     }
 
-    public bool PeekUInt256IsZero()
+    public readonly bool PeekUInt256IsZero()
     {
         int head = Head;
         if (head-- == 0)
@@ -305,7 +314,7 @@ public ref struct EvmStack<TTracing>
     {
         if (Head-- == 0)
         {
-            EvmStack.ThrowEvmStackUnderflowException();
+            return null;
         }
 
         return new Address(_bytes.Slice(Head * WordSize + WordSize - AddressSize, AddressSize).ToArray());
@@ -315,7 +324,7 @@ public ref struct EvmStack<TTracing>
     {
         if (Head-- == 0)
         {
-            EvmStack.ThrowEvmStackUnderflowException();
+            return ref Unsafe.NullRef<byte>();
         }
 
         return ref _bytes[Head * WordSize];
@@ -341,7 +350,7 @@ public ref struct EvmStack<TTracing>
         return _bytes[Head * WordSize + WordSize - sizeof(byte)];
     }
 
-    public void PushLeftPaddedBytes(Span<byte> value, int paddingLength)
+    public void PushLeftPaddedBytes(ReadOnlySpan<byte> value, int paddingLength)
     {
         if (typeof(TTracing) == typeof(IsTracing)) _tracer.ReportStackPush(value);
 
@@ -361,9 +370,9 @@ public ref struct EvmStack<TTracing>
         }
     }
 
-    public void Dup(in int depth)
+    public bool Dup(in int depth)
     {
-        EnsureDepth(depth);
+        if (!EnsureDepth(depth)) return false;
 
         ref byte bytes = ref MemoryMarshal.GetReference(_bytes);
 
@@ -381,19 +390,23 @@ public ref struct EvmStack<TTracing>
         {
             EvmStack.ThrowEvmStackOverflowException();
         }
+
+        return true;
     }
 
-    public readonly void EnsureDepth(int depth)
+    public readonly bool EnsureDepth(int depth)
     {
         if (Head < depth)
         {
-            EvmStack.ThrowEvmStackUnderflowException();
+            return false;
         }
+
+        return true;
     }
 
-    public readonly void Swap(int depth)
+    public readonly bool Swap(int depth)
     {
-        EnsureDepth(depth);
+        if (!EnsureDepth(depth)) return false;
 
         ref byte bytes = ref MemoryMarshal.GetReference(_bytes);
 
@@ -408,6 +421,8 @@ public ref struct EvmStack<TTracing>
         {
             Trace(depth);
         }
+
+        return true;
     }
 
     private readonly void Trace(int depth)
@@ -416,18 +431,6 @@ public ref struct EvmStack<TTracing>
         {
             _tracer.ReportStackPush(_bytes.Slice(Head * WordSize - i * WordSize, WordSize));
         }
-    }
-
-    public readonly List<string> GetStackTrace()
-    {
-        List<string> stackTrace = new();
-        for (int i = 0; i < Head; i++)
-        {
-            Span<byte> stackItem = _bytes.Slice(i * WordSize, WordSize);
-            stackTrace.Add(stackItem.ToArray().ToHexString(true, true));
-        }
-
-        return stackTrace;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -442,6 +445,9 @@ public static class EvmStack
     public const int RegisterLength = 1;
     public const int MaxStackSize = 1025;
     public const int ReturnStackSize = 1023;
+    public const int WordSize = 32;
+    public const int AddressSize = 20;
+
 
     [StackTraceHidden]
     [DoesNotReturn]

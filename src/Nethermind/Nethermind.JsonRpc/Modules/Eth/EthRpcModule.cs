@@ -10,6 +10,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Nethermind.Blockchain.Filters;
 using Nethermind.Blockchain.Find;
+using Nethermind.Blockchain.Receipts;
 using Nethermind.Core;
 using Nethermind.Core.Crypto;
 using Nethermind.Core.Extensions;
@@ -28,7 +29,6 @@ using Nethermind.Serialization.Rlp;
 using Nethermind.State;
 using Nethermind.State.Proofs;
 using Nethermind.Synchronization.ParallelSync;
-using Nethermind.Trie;
 using Nethermind.TxPool;
 using Nethermind.Wallet;
 using Block = Nethermind.Core.Block;
@@ -44,6 +44,7 @@ public partial class EthRpcModule : IEthRpcModule
     private readonly IJsonRpcConfig _rpcConfig;
     private readonly IBlockchainBridge _blockchainBridge;
     private readonly IBlockFinder _blockFinder;
+    private readonly IReceiptFinder _receiptFinder;
     private readonly IStateReader _stateReader;
     private readonly ITxPool _txPoolBridge;
     private readonly ITxSender _txSender;
@@ -56,15 +57,14 @@ public partial class EthRpcModule : IEthRpcModule
     private readonly IFeeHistoryOracle _feeHistoryOracle;
     private static bool HasStateForBlock(IBlockchainBridge blockchainBridge, BlockHeader header)
     {
-        RootCheckVisitor rootCheckVisitor = new();
-        blockchainBridge.RunTreeVisitor(rootCheckVisitor, header.StateRoot!);
-        return rootCheckVisitor.HasRoot;
+        return blockchainBridge.HasStateForRoot(header.StateRoot!);
     }
 
     public EthRpcModule(
         IJsonRpcConfig rpcConfig,
         IBlockchainBridge blockchainBridge,
         IBlockFinder blockFinder,
+        IReceiptFinder receiptFinder,
         IStateReader stateReader,
         ITxPool txPool,
         ITxSender txSender,
@@ -79,6 +79,7 @@ public partial class EthRpcModule : IEthRpcModule
         _rpcConfig = rpcConfig ?? throw new ArgumentNullException(nameof(rpcConfig));
         _blockchainBridge = blockchainBridge ?? throw new ArgumentNullException(nameof(blockchainBridge));
         _blockFinder = blockFinder ?? throw new ArgumentNullException(nameof(blockFinder));
+        _receiptFinder = receiptFinder ?? throw new ArgumentNullException(nameof(receiptFinder));
         _stateReader = stateReader ?? throw new ArgumentNullException(nameof(stateReader));
         _txPoolBridge = txPool ?? throw new ArgumentNullException(nameof(txPool));
         _txSender = txSender ?? throw new ArgumentNullException(nameof(txSender));
@@ -115,13 +116,27 @@ public partial class EthRpcModule : IEthRpcModule
         return ResultWrapper<UInt256?>.Success(_gasPriceOracle.GetGasPriceEstimate());
     }
 
+    public ResultWrapper<UInt256?> eth_blobBaseFee()
+    {
+        if (_blockFinder.Head?.Header?.ExcessBlobGas is null)
+        {
+            return ResultWrapper<UInt256?>.Success(UInt256.Zero);
+        }
+        if (!BlobGasCalculator.TryCalculateBlobGasPricePerUnit(_blockFinder.Head?.Header?.ExcessBlobGas ?? 0,
+            out UInt256 blobGasPricePerUnit))
+        {
+            return ResultWrapper<UInt256?>.Fail("Unable to calculate the current blob base fee");
+        }
+        return ResultWrapper<UInt256?>.Success(blobGasPricePerUnit);
+    }
+
     public ResultWrapper<UInt256?> eth_maxPriorityFeePerGas()
     {
         UInt256 gasPriceWithBaseFee = _gasPriceOracle.GetMaxPriorityGasFeeEstimate();
         return ResultWrapper<UInt256?>.Success(gasPriceWithBaseFee);
     }
 
-    public ResultWrapper<FeeHistoryResults> eth_feeHistory(long blockCount, BlockParameter newestBlock, double[]? rewardPercentiles = null)
+    public ResultWrapper<FeeHistoryResults> eth_feeHistory(int blockCount, BlockParameter newestBlock, double[]? rewardPercentiles = null)
     {
         return _feeHistoryOracle.GetFeeHistory(blockCount, newestBlock, rewardPercentiles);
     }
@@ -160,8 +175,8 @@ public partial class EthRpcModule : IEthRpcModule
             return Task.FromResult(GetStateFailureResult<UInt256?>(header));
         }
 
-        Account account = _stateReader.GetAccount(header!.StateRoot!, address);
-        return Task.FromResult(ResultWrapper<UInt256?>.Success(account?.Balance ?? UInt256.Zero));
+        _stateReader.TryGetAccount(header!.StateRoot!, address, out AccountStruct account);
+        return Task.FromResult(ResultWrapper<UInt256?>.Success(account.Balance));
     }
 
     public ResultWrapper<byte[]> eth_getStorageAt(Address address, UInt256 positionIndex,
@@ -174,14 +189,8 @@ public partial class EthRpcModule : IEthRpcModule
         }
 
         BlockHeader? header = searchResult.Object;
-        Account account = _stateReader.GetAccount(header!.StateRoot!, address);
-        if (account is null)
-        {
-            return ResultWrapper<byte[]>.Success(Array.Empty<byte>());
-        }
-
-        byte[] storage = _stateReader.GetStorage(account.StorageRoot, positionIndex);
-        return ResultWrapper<byte[]>.Success(storage!.PadLeft(32));
+        ReadOnlySpan<byte> storage = _stateReader.GetStorage(header!.StateRoot!, address, positionIndex);
+        return ResultWrapper<byte[]>.Success(storage.IsEmpty ? Bytes32.Zero.Unwrap() : storage!.PadLeft(32));
     }
 
     public Task<ResultWrapper<UInt256>> eth_getTransactionCount(Address address, BlockParameter blockParameter)
@@ -204,13 +213,11 @@ public partial class EthRpcModule : IEthRpcModule
             return Task.FromResult(GetStateFailureResult<UInt256>(header));
         }
 
-        Account account = _stateReader.GetAccount(header!.StateRoot!, address);
-        UInt256 nonce = account?.Nonce ?? 0;
-
-        return Task.FromResult(ResultWrapper<UInt256>.Success(nonce));
+        _stateReader.TryGetAccount(header!.StateRoot!, address, out AccountStruct account);
+        return Task.FromResult(ResultWrapper<UInt256>.Success(account.Nonce));
     }
 
-    public ResultWrapper<UInt256?> eth_getBlockTransactionCountByHash(Keccak blockHash)
+    public ResultWrapper<UInt256?> eth_getBlockTransactionCountByHash(Hash256 blockHash)
     {
         SearchResult<Block> searchResult = _blockFinder.SearchForBlock(new BlockParameter(blockHash));
         return searchResult.IsError
@@ -226,7 +233,12 @@ public partial class EthRpcModule : IEthRpcModule
             : ResultWrapper<UInt256?>.Success((UInt256)searchResult.Object!.Transactions.Length);
     }
 
-    public ResultWrapper<UInt256?> eth_getUncleCountByBlockHash(Keccak blockHash)
+    public ResultWrapper<ReceiptForRpc[]> eth_getBlockReceipts(BlockParameter blockParameter)
+    {
+        return _receiptFinder.GetBlockReceipts(blockParameter, _blockFinder, _specProvider);
+    }
+
+    public ResultWrapper<UInt256?> eth_getUncleCountByBlockHash(Hash256 blockHash)
     {
         SearchResult<Block> searchResult = _blockFinder.SearchForBlock(new BlockParameter(blockHash));
         return searchResult.IsError
@@ -251,19 +263,12 @@ public partial class EthRpcModule : IEthRpcModule
         }
 
         BlockHeader header = searchResult.Object;
-        if (!HasStateForBlock(_blockchainBridge, header!))
-        {
-            return GetStateFailureResult<byte[]>(header);
-        }
-
-        Account account = _stateReader.GetAccount(header!.StateRoot!, address);
-        if (account is null)
-        {
-            return ResultWrapper<byte[]>.Success(Array.Empty<byte>());
-        }
-
-        byte[]? code = _stateReader.GetCode(account.CodeHash);
-        return ResultWrapper<byte[]>.Success(code);
+        return !HasStateForBlock(_blockchainBridge, header!)
+            ? GetStateFailureResult<byte[]>(header)
+            : ResultWrapper<byte[]>.Success(
+                _stateReader.TryGetAccount(header!.StateRoot!, address, out AccountStruct account)
+                    ? _stateReader.GetCode(account.CodeHash)
+                    : Array.Empty<byte>());
     }
 
     public ResultWrapper<byte[]> eth_sign(Address addressData, byte[] message)
@@ -290,14 +295,14 @@ public partial class EthRpcModule : IEthRpcModule
         return ResultWrapper<byte[]>.Success(sig.Bytes);
     }
 
-    public Task<ResultWrapper<Keccak>> eth_sendTransaction(TransactionForRpc rpcTx)
+    public Task<ResultWrapper<Hash256>> eth_sendTransaction(TransactionForRpc rpcTx)
     {
         Transaction tx = rpcTx.ToTransactionWithDefaults(_blockchainBridge.GetChainId());
         TxHandlingOptions options = rpcTx.Nonce is null ? TxHandlingOptions.ManagedNonce : TxHandlingOptions.None;
         return SendTx(tx, options);
     }
 
-    public async Task<ResultWrapper<Keccak>> eth_sendRawTransaction(byte[] transaction)
+    public async Task<ResultWrapper<Hash256>> eth_sendRawTransaction(byte[] transaction)
     {
         try
         {
@@ -307,30 +312,30 @@ public partial class EthRpcModule : IEthRpcModule
         }
         catch (RlpException)
         {
-            return ResultWrapper<Keccak>.Fail("Invalid RLP.", ErrorCodes.TransactionRejected);
+            return ResultWrapper<Hash256>.Fail("Invalid RLP.", ErrorCodes.TransactionRejected);
         }
     }
 
-    private async Task<ResultWrapper<Keccak>> SendTx(Transaction tx,
+    private async Task<ResultWrapper<Hash256>> SendTx(Transaction tx,
         TxHandlingOptions txHandlingOptions = TxHandlingOptions.None)
     {
         try
         {
-            (Keccak txHash, AcceptTxResult? acceptTxResult) =
+            (Hash256 txHash, AcceptTxResult? acceptTxResult) =
                 await _txSender.SendTransaction(tx, txHandlingOptions | TxHandlingOptions.PersistentBroadcast);
 
             return acceptTxResult.Equals(AcceptTxResult.Accepted)
-                ? ResultWrapper<Keccak>.Success(txHash)
-                : ResultWrapper<Keccak>.Fail(acceptTxResult?.ToString() ?? string.Empty, ErrorCodes.TransactionRejected);
+                ? ResultWrapper<Hash256>.Success(txHash)
+                : ResultWrapper<Hash256>.Fail(acceptTxResult?.ToString() ?? string.Empty, ErrorCodes.TransactionRejected);
         }
         catch (SecurityException e)
         {
-            return ResultWrapper<Keccak>.Fail(e.Message, ErrorCodes.AccountLocked);
+            return ResultWrapper<Hash256>.Fail(e.Message, ErrorCodes.AccountLocked);
         }
         catch (Exception e)
         {
             if (_logger.IsError) _logger.Error("Failed to send transaction.", e);
-            return ResultWrapper<Keccak>.Fail(e.Message, ErrorCodes.TransactionRejected);
+            return ResultWrapper<Hash256>.Fail(e.Message, ErrorCodes.TransactionRejected);
         }
     }
 
@@ -342,11 +347,11 @@ public partial class EthRpcModule : IEthRpcModule
         new EstimateGasTxExecutor(_blockchainBridge, _blockFinder, _rpcConfig)
             .ExecuteTx(transactionCall, blockParameter);
 
-    public ResultWrapper<AccessListForRpc> eth_createAccessList(TransactionForRpc transactionCall, BlockParameter? blockParameter = null, bool optimize = true) =>
+    public ResultWrapper<AccessListForRpc?> eth_createAccessList(TransactionForRpc transactionCall, BlockParameter? blockParameter = null, bool optimize = true) =>
         new CreateAccessListTxExecutor(_blockchainBridge, _blockFinder, _rpcConfig, optimize)
             .ExecuteTx(transactionCall, blockParameter);
 
-    public ResultWrapper<BlockForRpc> eth_getBlockByHash(Keccak blockHash, bool returnFullTransactionObjects)
+    public ResultWrapper<BlockForRpc> eth_getBlockByHash(Hash256 blockHash, bool returnFullTransactionObjects)
     {
         return GetBlock(new BlockParameter(blockHash), returnFullTransactionObjects);
     }
@@ -376,14 +381,14 @@ public partial class EthRpcModule : IEthRpcModule
             : new BlockForRpc(block, returnFullTransactionObjects, _specProvider));
     }
 
-    public Task<ResultWrapper<TransactionForRpc>> eth_getTransactionByHash(Keccak transactionHash)
+    public Task<ResultWrapper<TransactionForRpc>> eth_getTransactionByHash(Hash256 transactionHash)
     {
         UInt256? baseFee = null;
         _txPoolBridge.TryGetPendingTransaction(transactionHash, out Transaction transaction);
         TxReceipt receipt = null; // note that if transaction is pending then for sure no receipt is known
         if (transaction is null)
         {
-            (receipt, transaction, baseFee) = _blockchainBridge.GetTransaction(transactionHash);
+            (receipt, transaction, baseFee) = _blockchainBridge.GetTransaction(transactionHash, checkTxnPool: false);
             if (transaction is null)
             {
                 return Task.FromResult(ResultWrapper<TransactionForRpc>.Success(null));
@@ -414,7 +419,7 @@ public partial class EthRpcModule : IEthRpcModule
         return ResultWrapper<TransactionForRpc[]>.Success(transactionsModels);
     }
 
-    public ResultWrapper<TransactionForRpc> eth_getTransactionByBlockHashAndIndex(Keccak blockHash,
+    public ResultWrapper<TransactionForRpc> eth_getTransactionByBlockHashAndIndex(Hash256 blockHash,
         UInt256 positionIndex)
     {
         SearchResult<Block> searchResult = _blockFinder.SearchForBlock(new BlockParameter(blockHash));
@@ -463,7 +468,7 @@ public partial class EthRpcModule : IEthRpcModule
         return ResultWrapper<TransactionForRpc>.Success(transactionModel);
     }
 
-    public Task<ResultWrapper<ReceiptForRpc>> eth_getTransactionReceipt(Keccak txHash)
+    public Task<ResultWrapper<ReceiptForRpc>> eth_getTransactionReceipt(Hash256 txHash)
     {
         (TxReceipt? receipt, TxGasInfo? gasInfo, int logIndexStart) = _blockchainBridge.GetReceiptAndGasInfo(txHash);
         if (receipt is null || gasInfo is null)
@@ -475,7 +480,7 @@ public partial class EthRpcModule : IEthRpcModule
         return Task.FromResult(ResultWrapper<ReceiptForRpc>.Success(new(txHash, receipt, gasInfo.Value, logIndexStart)));
     }
 
-    public ResultWrapper<BlockForRpc> eth_getUncleByBlockHashAndIndex(Keccak blockHash, UInt256 positionIndex)
+    public ResultWrapper<BlockForRpc> eth_getUncleByBlockHashAndIndex(Hash256 blockHash, UInt256 positionIndex)
     {
         return GetUncle(new BlockParameter(blockHash), positionIndex);
     }
@@ -573,7 +578,7 @@ public partial class EthRpcModule : IEthRpcModule
             if (id < 0 || !filterFound)
             {
                 cancellationTokenSource.Dispose();
-                return ResultWrapper<IEnumerable<FilterLog>>.Fail($"Filter with id: '{filterId}' does not exist.");
+                return ResultWrapper<IEnumerable<FilterLog>>.Fail($"Filter with id: {filterId} does not exist.");
             }
             else
             {
@@ -597,7 +602,9 @@ public partial class EthRpcModule : IEthRpcModule
         SearchResult<BlockHeader> toBlockResult;
 
         if (filter.FromBlock == filter.ToBlock)
+        {
             fromBlockResult = toBlockResult = _blockFinder.SearchForHeader(filter.ToBlock);
+        }
         else
         {
             toBlockResult = _blockFinder.SearchForHeader(filter.ToBlock);
@@ -620,19 +627,24 @@ public partial class EthRpcModule : IEthRpcModule
 
         cancellationToken.ThrowIfCancellationRequested();
 
-        long fromBlockNumber = fromBlockResult.Object!.Number;
-        long toBlockNumber = toBlockResult.Object!.Number;
+        BlockHeader fromBlock = fromBlockResult.Object!;
+        BlockHeader toBlock = toBlockResult.Object!;
+
+        long fromBlockNumber = fromBlock.Number;
+        long toBlockNumber = toBlock.Number;
 
         if (fromBlockNumber > toBlockNumber && toBlockNumber != 0)
         {
             cancellationTokenSource.Dispose();
-            return ResultWrapper<IEnumerable<FilterLog>>.Fail($"'From' block '{fromBlockNumber}' is later than 'to' block '{toBlockNumber}'.", ErrorCodes.InvalidParams);
+
+            return ResultWrapper<IEnumerable<FilterLog>>.Fail($"From block {fromBlockNumber} is later than to block {toBlockNumber}.", ErrorCodes.InvalidParams);
         }
 
         try
         {
-            IEnumerable<FilterLog> filterLogs = _blockchainBridge.GetLogs(filter.FromBlock!, filter.ToBlock!,
-                filter.Address, filter.Topics, cancellationToken);
+            LogFilter logFilter = _blockchainBridge.GetFilter(filter.FromBlock, filter.ToBlock,
+                filter.Address, filter.Topics);
+            IEnumerable<FilterLog> filterLogs = _blockchainBridge.GetLogs(logFilter, fromBlock, toBlock, cancellationToken);
 
             return ResultWrapper<IEnumerable<FilterLog>>.Success(GetLogs(filterLogs, cancellationTokenSource));
         }
@@ -682,7 +694,7 @@ public partial class EthRpcModule : IEthRpcModule
         transaction.SenderAddress ??= _blockchainBridge.RecoverTxSender(transaction);
     }
 
-    private IEnumerable<FilterLog> GetLogs(IEnumerable<FilterLog> logs, CancellationTokenSource cancellationTokenSource)
+    private static IEnumerable<FilterLog> GetLogs(IEnumerable<FilterLog> logs, CancellationTokenSource cancellationTokenSource)
     {
         using (cancellationTokenSource)
         {
@@ -693,22 +705,21 @@ public partial class EthRpcModule : IEthRpcModule
         }
     }
 
-    public ResultWrapper<AccountForRpc> eth_getAccount(Address accountAddress, BlockParameter? blockParameter)
+    public ResultWrapper<AccountForRpc?> eth_getAccount(Address accountAddress, BlockParameter? blockParameter)
     {
         SearchResult<BlockHeader> searchResult = _blockFinder.SearchForHeader(blockParameter);
         if (searchResult.IsError)
         {
-            return GetFailureResult<AccountForRpc, BlockHeader>(searchResult, _ethSyncingInfo.SyncMode.HaveNotSyncedHeadersYet());
+            return GetFailureResult<AccountForRpc?, BlockHeader>(searchResult, _ethSyncingInfo.SyncMode.HaveNotSyncedHeadersYet());
         }
 
         BlockHeader header = searchResult.Object;
-        if (!HasStateForBlock(_blockchainBridge, header!))
-        {
-            return GetStateFailureResult<AccountForRpc>(header);
-        }
-
-        Account account = _stateReader.GetAccount(header!.StateRoot!, accountAddress);
-        return ResultWrapper<AccountForRpc>.Success(account is null ? null : new AccountForRpc(account));
+        return !HasStateForBlock(_blockchainBridge, header!)
+            ? GetStateFailureResult<AccountForRpc?>(header)
+            : ResultWrapper<AccountForRpc?>.Success(
+                _stateReader.TryGetAccount(header!.StateRoot!, accountAddress, out AccountStruct account)
+                    ? new AccountForRpc(account)
+                    : null);
     }
 
     private static ResultWrapper<TResult> GetFailureResult<TResult, TSearch>(SearchResult<TSearch> searchResult, bool isTemporary) where TSearch : class =>

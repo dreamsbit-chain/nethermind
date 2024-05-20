@@ -4,11 +4,13 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Text;
 using System.Threading;
 using Nethermind.Blockchain;
 using Nethermind.Core;
+using Nethermind.Core.Collections;
 using Nethermind.Core.Crypto;
 using Nethermind.Db;
 using Nethermind.Logging;
@@ -16,7 +18,7 @@ using Nethermind.State.Snap;
 
 namespace Nethermind.Synchronization.SnapSync
 {
-    public class ProgressTracker
+    public class ProgressTracker : IDisposable
     {
         private const string NO_REQUEST = "Skipped Request";
 
@@ -24,7 +26,7 @@ namespace Nethermind.Synchronization.SnapSync
         public const int HIGH_STORAGE_QUEUE_SIZE = STORAGE_BATCH_SIZE * 100;
         private const int CODES_BATCH_SIZE = 1_000;
         public const int HIGH_CODES_QUEUE_SIZE = CODES_BATCH_SIZE * 5;
-        private readonly byte[] ACC_PROGRESS_KEY = Encoding.ASCII.GetBytes("AccountProgressKey");
+        internal static readonly byte[] ACC_PROGRESS_KEY = Encoding.ASCII.GetBytes("AccountProgressKey");
 
         // This does not need to be a lot as it spawn other requests. In fact 8 is probably too much. It is severely
         // bottlenecked by _syncCommit lock in SnapProviderHelper, which in turns is limited by the IO.
@@ -42,14 +44,14 @@ namespace Nethermind.Synchronization.SnapSync
 
         // Partitions are indexed by its limit keccak/address as they are keep in the request struct and remain the same
         // throughout the sync. So its easy.
-        private Dictionary<ValueKeccak, AccountRangePartition> AccountRangePartitions { get; set; } = new();
+        private Dictionary<ValueHash256, AccountRangePartition> AccountRangePartitions { get; set; } = new();
 
         // Using a queue here to evenly distribute request across partitions. Don't want a situation where one really slow
         // partition is taking up most of the time at the end of the sync.
         private ConcurrentQueue<AccountRangePartition> AccountRangeReadyForRequest { get; set; } = new();
         private ConcurrentQueue<StorageRange> NextSlotRange { get; set; } = new();
         private ConcurrentQueue<PathWithAccount> StoragesToRetrieve { get; set; } = new();
-        private ConcurrentQueue<ValueKeccak> CodesToRetrieve { get; set; } = new();
+        private ConcurrentQueue<ValueHash256> CodesToRetrieve { get; set; } = new();
         private ConcurrentQueue<AccountWithStorageStartingHash> AccountsToRefresh { get; set; } = new();
 
 
@@ -57,7 +59,7 @@ namespace Nethermind.Synchronization.SnapSync
 
         public ProgressTracker(IBlockTree blockTree, IDb db, ILogManager logManager, int accountRangePartitionCount = 8)
         {
-            _logger = logManager.GetClassLogger() ?? throw new ArgumentNullException(nameof(logManager));
+            _logger = logManager?.GetClassLogger() ?? throw new ArgumentNullException(nameof(logManager));
             _db = db ?? throw new ArgumentNullException(nameof(db));
 
             _pivot = new Pivot(blockTree, logManager);
@@ -84,7 +86,7 @@ namespace Nethermind.Synchronization.SnapSync
             {
                 AccountRangePartition partition = new AccountRangePartition();
 
-                Keccak startingPath = new Keccak(Keccak.Zero.Bytes);
+                Hash256 startingPath = new Hash256(Keccak.Zero.Bytes);
                 startingPath.Bytes[0] = curStartingPath;
 
                 partition.NextAccountPath = startingPath;
@@ -92,7 +94,7 @@ namespace Nethermind.Synchronization.SnapSync
 
                 curStartingPath += (byte)partitionSize;
 
-                Keccak limitPath;
+                Hash256 limitPath;
 
                 // Special case for the last partition
                 if (i == _accountRangePartitionCount - 1)
@@ -101,7 +103,7 @@ namespace Nethermind.Synchronization.SnapSync
                 }
                 else
                 {
-                    limitPath = new Keccak(Keccak.Zero.Bytes);
+                    limitPath = new Hash256(Keccak.Zero.Bytes);
                     limitPath.Bytes[0] = curStartingPath;
                 }
 
@@ -132,90 +134,82 @@ namespace Nethermind.Synchronization.SnapSync
             _pivot.UpdateHeaderForcefully();
         }
 
-        public (SnapSyncBatch request, bool finished) GetNextRequest()
+        public bool IsFinished(out SnapSyncBatch? nextBatch)
         {
             Interlocked.Increment(ref _reqCount);
 
-            var pivotHeader = _pivot.GetPivotHeader();
-            var rootHash = pivotHeader.StateRoot;
+            BlockHeader? pivotHeader = _pivot.GetPivotHeader();
+            Hash256 rootHash = pivotHeader.StateRoot!;
             var blockNumber = pivotHeader.Number;
-
-            SnapSyncBatch request = new();
 
             if (!AccountsToRefresh.IsEmpty)
             {
-                return DequeAccountToRefresh(request, rootHash);
+                nextBatch = DequeAccountToRefresh(rootHash);
             }
-
-            if (ShouldRequestAccountRequests() && AccountRangeReadyForRequest.TryDequeue(out AccountRangePartition partition))
+            else if (ShouldRequestAccountRequests() && AccountRangeReadyForRequest.TryDequeue(out AccountRangePartition partition))
             {
-                return CreateAccountRangeRequest(rootHash, partition, blockNumber, request);
+                nextBatch = CreateAccountRangeRequest(rootHash, partition, blockNumber);
             }
-
-            if (TryDequeNextSlotRange(out StorageRange slotRange))
+            else if (TryDequeNextSlotRange(out StorageRange slotRange))
             {
-                return CreateNextSlowRangeRequest(slotRange, rootHash, blockNumber, request);
+                nextBatch = CreateNextSlowRangeRequest(slotRange, rootHash, blockNumber);
             }
-
-            if (StoragesToRetrieve.Count >= HIGH_STORAGE_QUEUE_SIZE)
+            else if (StoragesToRetrieve.Count >= HIGH_STORAGE_QUEUE_SIZE)
             {
-                return DequeStorageToRetrieveRequest(rootHash, blockNumber, request);
+                nextBatch = DequeStorageToRetrieveRequest(rootHash, blockNumber);
             }
-
-            if (CodesToRetrieve.Count >= HIGH_CODES_QUEUE_SIZE)
+            else if (CodesToRetrieve.Count >= HIGH_CODES_QUEUE_SIZE)
             {
-                return DequeCodeRequest(request);
+                nextBatch = DequeCodeRequest();
             }
-
-            if (!StoragesToRetrieve.IsEmpty)
+            else if (!StoragesToRetrieve.IsEmpty)
             {
-                return DequeStorageToRetrieveRequest(rootHash, blockNumber, request);
+                nextBatch = DequeStorageToRetrieveRequest(rootHash, blockNumber);
             }
-
-            if (!CodesToRetrieve.IsEmpty)
+            else if (!CodesToRetrieve.IsEmpty)
             {
-                return DequeCodeRequest(request);
+                nextBatch = DequeCodeRequest();
             }
-
-            bool rangePhaseFinished = IsSnapGetRangesFinished();
-            if (rangePhaseFinished)
+            else
             {
-                _logger.Info($"Snap - State Ranges (Phase 1) finished.");
-                FinishRangePhase();
+                nextBatch = null;
+                bool rangePhaseFinished = IsSnapGetRangesFinished();
+                if (rangePhaseFinished)
+                {
+                    _logger.Info("Snap - State Ranges (Phase 1) finished.");
+                    FinishRangePhase();
+                }
+
+                LogRequest(NO_REQUEST);
+
+                return IsSnapGetRangesFinished();
             }
 
-            LogRequest(NO_REQUEST);
-
-            return (null, IsSnapGetRangesFinished());
+            return false;
         }
 
-        private (SnapSyncBatch request, bool finished) DequeCodeRequest(SnapSyncBatch request)
+        private SnapSyncBatch DequeCodeRequest()
         {
             Interlocked.Increment(ref _activeCodeRequests);
 
-            // TODO: optimize this
-            List<ValueKeccak> codesToQuery = new(CODES_BATCH_SIZE);
-            for (int i = 0; i < CODES_BATCH_SIZE && CodesToRetrieve.TryDequeue(out ValueKeccak codeHash); i++)
+            ArrayPoolList<ValueHash256> codesToQuery = new(CODES_BATCH_SIZE);
+            for (int i = 0; i < CODES_BATCH_SIZE && CodesToRetrieve.TryDequeue(out ValueHash256 codeHash); i++)
             {
                 codesToQuery.Add(codeHash);
             }
 
-            codesToQuery.Sort();
+            codesToQuery.AsSpan().Sort();
 
             LogRequest($"CodesToRetrieve:{codesToQuery.Count}");
 
-            request.CodesRequest = codesToQuery.ToArray();
-
-            return (request, false);
+            return new SnapSyncBatch { CodesRequest = codesToQuery };
         }
 
-        private (SnapSyncBatch request, bool finished) DequeStorageToRetrieveRequest(Keccak rootHash, long blockNumber,
-            SnapSyncBatch request)
+        private SnapSyncBatch DequeStorageToRetrieveRequest(Hash256 rootHash, long blockNumber)
         {
             Interlocked.Increment(ref _activeStorageRequests);
 
-            // TODO: optimize this
-            List<PathWithAccount> storagesToQuery = new(STORAGE_BATCH_SIZE);
+            ArrayPoolList<PathWithAccount> storagesToQuery = new(STORAGE_BATCH_SIZE);
             for (int i = 0; i < STORAGE_BATCH_SIZE && StoragesToRetrieve.TryDequeue(out PathWithAccount storage); i++)
             {
                 storagesToQuery.Add(storage);
@@ -224,33 +218,27 @@ namespace Nethermind.Synchronization.SnapSync
             StorageRange storageRange = new()
             {
                 RootHash = rootHash,
-                Accounts = storagesToQuery.ToArray(),
+                Accounts = storagesToQuery,
                 StartingHash = ValueKeccak.Zero,
                 BlockNumber = blockNumber
             };
 
             LogRequest($"StoragesToRetrieve:{storagesToQuery.Count}");
 
-            request.StorageRangeRequest = storageRange;
-
-            return (request, false);
+            return new SnapSyncBatch { StorageRangeRequest = storageRange };
         }
 
-        private (SnapSyncBatch request, bool finished) CreateNextSlowRangeRequest(StorageRange slotRange, Keccak rootHash,
-            long blockNumber, SnapSyncBatch request)
+        private SnapSyncBatch CreateNextSlowRangeRequest(StorageRange slotRange, Hash256 rootHash, long blockNumber)
         {
             slotRange.RootHash = rootHash;
             slotRange.BlockNumber = blockNumber;
 
-            LogRequest($"NextSlotRange:{slotRange.Accounts.Length}");
+            LogRequest($"NextSlotRange:{slotRange.Accounts.Count}");
 
-            request.StorageRangeRequest = slotRange;
-
-            return (request, false);
+            return new SnapSyncBatch { StorageRangeRequest = slotRange };
         }
 
-        private (SnapSyncBatch request, bool finished) CreateAccountRangeRequest(Keccak rootHash,
-            AccountRangePartition partition, long blockNumber, SnapSyncBatch request)
+        private SnapSyncBatch CreateAccountRangeRequest(Hash256 rootHash, AccountRangePartition partition, long blockNumber)
         {
             Interlocked.Increment(ref _activeAccountRequests);
 
@@ -261,29 +249,24 @@ namespace Nethermind.Synchronization.SnapSync
                 blockNumber);
 
             LogRequest("AccountRange");
-
-            request.AccountRangeRequest = range;
-
-            return (request, false);
+            return new SnapSyncBatch { AccountRangeRequest = range };
         }
 
-        private (SnapSyncBatch request, bool finished) DequeAccountToRefresh(SnapSyncBatch request, Keccak rootHash)
+        private SnapSyncBatch DequeAccountToRefresh(Hash256 rootHash)
         {
             Interlocked.Increment(ref _activeAccRefreshRequests);
 
             LogRequest($"AccountsToRefresh: {AccountsToRefresh.Count}");
 
             int queueLength = AccountsToRefresh.Count;
-            AccountWithStorageStartingHash[] paths = new AccountWithStorageStartingHash[queueLength];
+            ArrayPoolList<AccountWithStorageStartingHash> paths = new(queueLength);
 
-            for (int i = 0; i < queueLength && AccountsToRefresh.TryDequeue(out var acc); i++)
+            for (int i = 0; i < queueLength && AccountsToRefresh.TryDequeue(out AccountWithStorageStartingHash acc); i++)
             {
-                paths[i] = acc;
+                paths.Add(acc);
             }
 
-            request.AccountsToRefreshRequest = new AccountsToRefreshRequest() { RootHash = rootHash, Paths = paths };
-
-            return (request, false);
+            return new SnapSyncBatch { AccountsToRefreshRequest = new AccountsToRefreshRequest { RootHash = rootHash, Paths = paths } };
         }
 
         private bool ShouldRequestAccountRequests()
@@ -294,7 +277,7 @@ namespace Nethermind.Synchronization.SnapSync
                    && CodesToRetrieve.Count < HIGH_CODES_QUEUE_SIZE;
         }
 
-        public void EnqueueCodeHashes(ReadOnlySpan<ValueKeccak> codeHashes)
+        public void EnqueueCodeHashes(ReadOnlySpan<ValueHash256> codeHashes)
         {
             foreach (var hash in codeHashes)
             {
@@ -302,7 +285,7 @@ namespace Nethermind.Synchronization.SnapSync
             }
         }
 
-        public void ReportCodeRequestFinished(ReadOnlySpan<ValueKeccak> codeHashes)
+        public void ReportCodeRequestFinished(ReadOnlySpan<ValueHash256> codeHashes)
         {
             EnqueueCodeHashes(codeHashes);
 
@@ -327,16 +310,19 @@ namespace Nethermind.Synchronization.SnapSync
             StoragesToRetrieve.Enqueue(pwa);
         }
 
-        public void EnqueueAccountRefresh(PathWithAccount pathWithAccount, in ValueKeccak? startingHash)
+        public void EnqueueAccountRefresh(PathWithAccount pathWithAccount, in ValueHash256? startingHash)
         {
             AccountsToRefresh.Enqueue(new AccountWithStorageStartingHash() { PathAndAccount = pathWithAccount, StorageStartingHash = startingHash.GetValueOrDefault() });
         }
 
-        public void ReportFullStorageRequestFinished(ReadOnlySpan<PathWithAccount> storages = default)
+        public void ReportFullStorageRequestFinished(IEnumerable<PathWithAccount> storages = default)
         {
-            for (int index = 0; index < storages.Length; index++)
+            if (storages is not null)
             {
-                EnqueueAccountStorage(storages[index]);
+                foreach (PathWithAccount pathWithAccount in storages)
+                {
+                    EnqueueAccountStorage(pathWithAccount);
+                }
             }
 
             Interlocked.Decrement(ref _activeStorageRequests);
@@ -357,7 +343,7 @@ namespace Nethermind.Synchronization.SnapSync
             Interlocked.Decrement(ref _activeStorageRequests);
         }
 
-        public void ReportAccountRangePartitionFinished(in ValueKeccak hashLimit)
+        public void ReportAccountRangePartitionFinished(in ValueHash256 hashLimit)
         {
             AccountRangePartition partition = AccountRangePartitions[hashLimit];
 
@@ -368,7 +354,7 @@ namespace Nethermind.Synchronization.SnapSync
             Interlocked.Decrement(ref _activeAccountRequests);
         }
 
-        public void UpdateAccountRangePartitionProgress(in ValueKeccak hashLimit, in ValueKeccak nextPath, bool moreChildrenToRight)
+        public void UpdateAccountRangePartitionProgress(in ValueHash256 hashLimit, in ValueHash256 nextPath, bool moreChildrenToRight)
         {
             AccountRangePartition partition = AccountRangePartitions[hashLimit];
 
@@ -396,12 +382,12 @@ namespace Nethermind.Synchronization.SnapSync
             byte[] progress = _db.Get(ACC_PROGRESS_KEY);
             if (progress is { Length: 32 })
             {
-                ValueKeccak path = new ValueKeccak(progress);
+                ValueHash256 path = new ValueHash256(progress);
 
                 if (path == ValueKeccak.MaxValue)
                 {
                     _logger.Info($"Snap - State Ranges (Phase 1) is finished.");
-                    foreach (KeyValuePair<ValueKeccak, AccountRangePartition> partition in AccountRangePartitions)
+                    foreach (KeyValuePair<ValueHash256, AccountRangePartition> partition in AccountRangePartitions)
                     {
                         partition.Value.MoreAccountsToRight = false;
                     }
@@ -416,7 +402,8 @@ namespace Nethermind.Synchronization.SnapSync
 
         private void FinishRangePhase()
         {
-            _db.Set(ACC_PROGRESS_KEY, ValueKeccak.MaxValue.Bytes);
+            _db.PutSpan(ACC_PROGRESS_KEY, ValueKeccak.MaxValue.Bytes, WriteFlags.DisableWAL);
+            _db.Flush();
         }
 
         private void LogRequest(string reqType)
@@ -424,7 +411,7 @@ namespace Nethermind.Synchronization.SnapSync
             if (_reqCount % 100 == 0)
             {
                 int totalPathProgress = 0;
-                foreach (KeyValuePair<ValueKeccak, AccountRangePartition> kv in AccountRangePartitions)
+                foreach (KeyValuePair<ValueHash256, AccountRangePartition> kv in AccountRangePartitions)
                 {
                     AccountRangePartition? partiton = kv.Value;
                     int nextAccount = partiton.NextAccountPath.Bytes[0] * 256 + partiton.NextAccountPath.Bytes[1];
@@ -461,10 +448,18 @@ namespace Nethermind.Synchronization.SnapSync
         // A partition of the top level account range starting from `AccountPathStart` to `AccountPathLimit` (exclusive).
         private class AccountRangePartition
         {
-            public ValueKeccak NextAccountPath { get; set; } = ValueKeccak.Zero;
-            public ValueKeccak AccountPathStart { get; set; } = ValueKeccak.Zero; // Not really needed, but useful
-            public ValueKeccak AccountPathLimit { get; set; } = ValueKeccak.MaxValue;
+            public ValueHash256 NextAccountPath { get; set; } = ValueKeccak.Zero;
+            public ValueHash256 AccountPathStart { get; set; } = ValueKeccak.Zero; // Not really needed, but useful
+            public ValueHash256 AccountPathLimit { get; set; } = ValueKeccak.MaxValue;
             public bool MoreAccountsToRight { get; set; } = true;
+        }
+
+        public void Dispose()
+        {
+            while (NextSlotRange.TryDequeue(out StorageRange? range))
+            {
+                range?.Dispose();
+            }
         }
     }
 }

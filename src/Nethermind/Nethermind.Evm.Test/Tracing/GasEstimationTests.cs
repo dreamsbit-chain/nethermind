@@ -12,10 +12,12 @@ using Nethermind.Crypto;
 using Nethermind.Db;
 using Nethermind.Evm.Tracing;
 using Nethermind.Evm.TransactionProcessing;
+using Nethermind.Int256;
 using Nethermind.Logging;
 using Nethermind.Specs;
 using Nethermind.State;
 using Nethermind.Trie.Pruning;
+using NSubstitute;
 using NUnit.Framework;
 
 namespace Nethermind.Evm.Test.Tracing
@@ -29,7 +31,7 @@ namespace Nethermind.Evm.Test.Tracing
 
         public GasEstimationTests(bool useCreates)
         {
-            _executionType = useCreates ? ExecutionType.Create : ExecutionType.Call;
+            _executionType = useCreates ? ExecutionType.CREATE : ExecutionType.CALL;
         }
 
         [Test]
@@ -40,9 +42,9 @@ namespace Nethermind.Evm.Test.Tracing
             Block block = Build.A.Block.WithNumber(1).WithTransactions(tx).TestObject;
 
             testEnvironment.tracer.ReportAction(1000, 0, Address.Zero, Address.Zero, Array.Empty<byte>(),
-                ExecutionType.Transaction, false);
+                ExecutionType.TRANSACTION, false);
             testEnvironment.tracer.ReportAction(1000, 0, Address.Zero, Address.Zero, Array.Empty<byte>(),
-                ExecutionType.Call, true);
+                ExecutionType.CALL, true);
             testEnvironment.tracer.ReportActionEnd(400,
                 Array.Empty<byte>()); // this would not happen but we want to ensure that precompiles are ignored
             testEnvironment.tracer.ReportActionEnd(600, Array.Empty<byte>());
@@ -73,7 +75,7 @@ namespace Nethermind.Evm.Test.Tracing
             Block block = Build.A.Block.WithNumber(1).WithTransactions(tx).TestObject;
 
             testEnvironment.tracer.ReportAction(1000, 0, Address.Zero, Address.Zero, Array.Empty<byte>(),
-                ExecutionType.Transaction, false);
+                ExecutionType.TRANSACTION, false);
             testEnvironment.tracer.ReportActionEnd(600, Array.Empty<byte>());
 
             testEnvironment.estimator.Estimate(tx, block.Header, testEnvironment.tracer).Should().Be(0);
@@ -87,12 +89,11 @@ namespace Nethermind.Evm.Test.Tracing
             Block block = Build.A.Block.WithNumber(1).WithTransactions(tx).TestObject;
 
             testEnvironment.tracer.ReportAction(1000, 0, Address.Zero, Address.Zero, Array.Empty<byte>(),
-                ExecutionType.Transaction, false);
+                ExecutionType.TRANSACTION, false);
             testEnvironment.tracer.ReportAction(1000, 0, Address.Zero, Address.Zero, Array.Empty<byte>(),
                 _executionType, false);
             testEnvironment.tracer.ReportActionEnd(400, Array.Empty<byte>());
-            testEnvironment.tracer.ReportAction(400, 0, Address.Zero, Address.Zero, Array.Empty<byte>(), _executionType,
-                false);
+            testEnvironment.tracer.ReportAction(400, 0, Address.Zero, Address.Zero, Array.Empty<byte>(), _executionType, false);
             if (_executionType.IsAnyCreate())
             {
                 testEnvironment.tracer.ReportActionEnd(200, Address.Zero, Array.Empty<byte>());
@@ -115,11 +116,10 @@ namespace Nethermind.Evm.Test.Tracing
             Block block = Build.A.Block.WithNumber(1).WithTransactions(tx).TestObject;
 
             testEnvironment.tracer.ReportAction(1000, 0, Address.Zero, Address.Zero, Array.Empty<byte>(),
-                ExecutionType.Transaction, false);
+                ExecutionType.TRANSACTION, false);
             testEnvironment.tracer.ReportAction(1000, 0, Address.Zero, Address.Zero, Array.Empty<byte>(),
                 _executionType, false);
-            testEnvironment.tracer.ReportAction(400, 0, Address.Zero, Address.Zero, Array.Empty<byte>(), _executionType,
-                false);
+            testEnvironment.tracer.ReportAction(400, 0, Address.Zero, Address.Zero, Array.Empty<byte>(), _executionType, false);
 
             if (_executionType.IsAnyCreate())
             {
@@ -147,7 +147,7 @@ namespace Nethermind.Evm.Test.Tracing
 
             long gasLeft = gasLimit - 22000;
             testEnvironment.tracer.ReportAction(gasLeft, 0, Address.Zero, Address.Zero, Array.Empty<byte>(),
-                ExecutionType.Transaction, false);
+                ExecutionType.TRANSACTION, false);
             gasLeft = 63 * gasLeft / 64;
             testEnvironment.tracer.ReportAction(gasLeft, 0, Address.Zero, Address.Zero, Array.Empty<byte>(),
                 _executionType, false);
@@ -155,19 +155,9 @@ namespace Nethermind.Evm.Test.Tracing
             testEnvironment.tracer.ReportAction(gasLeft, 0, Address.Zero, Address.Zero, Array.Empty<byte>(),
                 _executionType, false);
 
-            if (_executionType.IsAnyCreate())
-            {
-                testEnvironment.tracer.ReportActionError(EvmExceptionType.Revert, 96000000);
-                testEnvironment.tracer.ReportActionError(EvmExceptionType.Revert, 98000000);
-                testEnvironment.tracer.ReportActionError(EvmExceptionType.Revert, 99000000);
-            }
-            else
-            {
-                testEnvironment.tracer.ReportActionError(EvmExceptionType.Revert, 96000000);
-                testEnvironment.tracer.ReportActionError(EvmExceptionType.Revert, 98000000);
-                testEnvironment.tracer.ReportActionError(EvmExceptionType.Revert, 99000000);
-            }
-
+            testEnvironment.tracer.ReportActionError(EvmExceptionType.Revert, 96000000);
+            testEnvironment.tracer.ReportActionError(EvmExceptionType.Revert, 98000000);
+            testEnvironment.tracer.ReportActionError(EvmExceptionType.Revert, 99000000);
             testEnvironment.estimator.Estimate(tx, block.Header, testEnvironment.tracer).Should().Be(35146L);
         }
 
@@ -179,15 +169,33 @@ namespace Nethermind.Evm.Test.Tracing
             Block block = Build.A.Block.WithNumber(1).WithTransactions(tx).TestObject;
 
             testEnvironment.tracer.ReportAction(128, 0, Address.Zero, Address.Zero, Array.Empty<byte>(),
-                ExecutionType.Transaction, false);
-            testEnvironment.tracer.ReportAction(100, 0, Address.Zero, Address.Zero, Array.Empty<byte>(), _executionType,
-                false);
+                ExecutionType.TRANSACTION, false);
+            testEnvironment.tracer.ReportAction(100, 0, Address.Zero, Address.Zero, Array.Empty<byte>(), _executionType, false);
 
             testEnvironment.tracer.ReportActionEnd(63, Array.Empty<byte>()); // second level
             testEnvironment.tracer.ReportActionEnd(65, Array.Empty<byte>());
 
             testEnvironment.estimator.Estimate(tx, block.Header, testEnvironment.tracer).Should().Be(1);
         }
+
+        [Test]
+        public void Handles_well_precompile_out_of_gas()
+        {
+            TestEnvironment testEnvironment = new();
+            Transaction tx = Build.A.Transaction.WithGasLimit(128).TestObject;
+            Block block = Build.A.Block.WithNumber(1).WithTransactions(tx).TestObject;
+
+            testEnvironment.tracer.ReportAction(128, 0, Address.Zero, Address.Zero, Array.Empty<byte>(), ExecutionType.TRANSACTION);
+            testEnvironment.tracer.ReportAction(100, 0, Address.Zero, Address.Zero, Array.Empty<byte>(), _executionType);
+            testEnvironment.tracer.ReportAction(100, 0, Address.Zero, Address.Zero, Array.Empty<byte>(), _executionType, true);
+
+            Action reportError = () => testEnvironment.tracer.ReportActionError(EvmExceptionType.OutOfGas);
+
+            reportError.Should().NotThrow();
+            reportError.Should().NotThrow();
+            reportError.Should().NotThrow();
+        }
+
 
         [Test]
         public void Handles_well_nested_calls_where_most_nested_defines_excess()
@@ -197,11 +205,10 @@ namespace Nethermind.Evm.Test.Tracing
             Block block = Build.A.Block.WithNumber(1).WithTransactions(tx).TestObject;
 
             testEnvironment.tracer.ReportAction(1000, 0, Address.Zero, Address.Zero, Array.Empty<byte>(),
-                ExecutionType.Transaction, false);
+                ExecutionType.TRANSACTION, false);
             testEnvironment.tracer.ReportAction(1000, 0, Address.Zero, Address.Zero, Array.Empty<byte>(),
                 _executionType, false);
-            testEnvironment.tracer.ReportAction(400, 0, Address.Zero, Address.Zero, Array.Empty<byte>(), _executionType,
-                false);
+            testEnvironment.tracer.ReportAction(400, 0, Address.Zero, Address.Zero, Array.Empty<byte>(), _executionType, false);
 
             if (_executionType.IsAnyCreate())
             {
@@ -227,11 +234,10 @@ namespace Nethermind.Evm.Test.Tracing
             Block block = Build.A.Block.WithNumber(1).WithTransactions(tx).TestObject;
 
             testEnvironment.tracer.ReportAction(1000, 0, Address.Zero, Address.Zero, Array.Empty<byte>(),
-                ExecutionType.Transaction, false);
+                ExecutionType.TRANSACTION, false);
             testEnvironment.tracer.ReportAction(1000, 0, Address.Zero, Address.Zero, Array.Empty<byte>(),
                 _executionType, false);
-            testEnvironment.tracer.ReportAction(400, 0, Address.Zero, Address.Zero, Array.Empty<byte>(), _executionType,
-                false);
+            testEnvironment.tracer.ReportAction(400, 0, Address.Zero, Address.Zero, Array.Empty<byte>(), _executionType, false);
 
             if (_executionType.IsAnyCreate())
             {
@@ -247,6 +253,94 @@ namespace Nethermind.Evm.Test.Tracing
             }
 
             testEnvironment.estimator.Estimate(tx, block.Header, testEnvironment.tracer).Should().Be(17);
+        }
+
+        [TestCase(-1)]
+        [TestCase(10000)]
+        [TestCase(10001)]
+        public void Estimate_UseErrorMarginOutsideBounds_ThrowArgumentOutOfRangeException(int errorMargin)
+        {
+            Transaction tx = Build.A.Transaction.TestObject;
+            Block block = Build.A.Block.WithTransactions(tx).TestObject;
+            EstimateGasTracer tracer = new();
+            tracer.MarkAsSuccess(Address.Zero, 1, Array.Empty<byte>(), Array.Empty<LogEntry>());
+            IReadOnlyStateProvider stateProvider = Substitute.For<IReadOnlyStateProvider>();
+            stateProvider.GetBalance(Arg.Any<Address>()).Returns(new UInt256(1));
+            GasEstimator sut = new GasEstimator(
+                Substitute.For<ITransactionProcessor>(),
+                stateProvider,
+                MainnetSpecProvider.Instance,
+                new BlocksConfig());
+
+            Assert.That(() => sut.Estimate(tx, block.Header, tracer, errorMargin), Throws.TypeOf<ArgumentOutOfRangeException>());
+        }
+
+
+        [TestCase(Transaction.BaseTxGasCost, GasEstimator.DefaultErrorMargin)]
+        [TestCase(Transaction.BaseTxGasCost, 100)]
+        [TestCase(Transaction.BaseTxGasCost, 1000)]
+        [TestCase(Transaction.BaseTxGasCost + 10000, GasEstimator.DefaultErrorMargin)]
+        [TestCase(Transaction.BaseTxGasCost + 20000, GasEstimator.DefaultErrorMargin)]
+        [TestCase(Transaction.BaseTxGasCost + 123456789, 123)]
+        public void Estimate_DifferentAmountOfGasAndMargin_EstimationResultIsWithinMargin(int totalGas, int errorMargin)
+        {
+            Transaction tx = Build.A.Transaction.WithGasLimit(30000).TestObject;
+            Block block = Build.A.Block.WithNumber(1).WithTransactions(tx).TestObject;
+            EstimateGasTracer tracer = new();
+            tracer.MarkAsSuccess(Address.Zero, totalGas, Array.Empty<byte>(), Array.Empty<LogEntry>());
+            IReadOnlyStateProvider stateProvider = Substitute.For<IReadOnlyStateProvider>();
+            stateProvider.GetBalance(Arg.Any<Address>()).Returns(new UInt256(1));
+            GasEstimator sut = new GasEstimator(
+                Substitute.For<ITransactionProcessor>(),
+                stateProvider,
+                MainnetSpecProvider.Instance,
+                new BlocksConfig());
+
+            long result = sut.Estimate(tx, block.Header, tracer, errorMargin);
+
+            Assert.That(result, Is.EqualTo(totalGas).Within(totalGas * (errorMargin / 10000d + 1)));
+        }
+
+        [Test]
+        public void Estimate_UseErrorMargin_EstimationResultIsNotExact()
+        {
+            Transaction tx = Build.A.Transaction.WithGasLimit(30000).TestObject;
+            Block block = Build.A.Block.WithNumber(1).WithTransactions(tx).TestObject;
+            EstimateGasTracer tracer = new();
+            const int totalGas = Transaction.BaseTxGasCost;
+            tracer.MarkAsSuccess(Address.Zero, totalGas, Array.Empty<byte>(), Array.Empty<LogEntry>());
+            IReadOnlyStateProvider stateProvider = Substitute.For<IReadOnlyStateProvider>();
+            stateProvider.GetBalance(Arg.Any<Address>()).Returns(new UInt256(1));
+            GasEstimator sut = new GasEstimator(
+                Substitute.For<ITransactionProcessor>(),
+                stateProvider,
+                MainnetSpecProvider.Instance,
+                new BlocksConfig());
+
+            long result = sut.Estimate(tx, block.Header, tracer, GasEstimator.DefaultErrorMargin);
+
+            Assert.That(result, Is.Not.EqualTo(totalGas).Within(10));
+        }
+
+        [Test]
+        public void Estimate_UseZeroErrorMargin_EstimationResultIsExact()
+        {
+            Transaction tx = Build.A.Transaction.WithGasLimit(30000).TestObject;
+            Block block = Build.A.Block.WithNumber(1).WithTransactions(tx).TestObject;
+            EstimateGasTracer tracer = new();
+            const int totalGas = Transaction.BaseTxGasCost;
+            tracer.MarkAsSuccess(Address.Zero, totalGas, Array.Empty<byte>(), Array.Empty<LogEntry>());
+            IReadOnlyStateProvider stateProvider = Substitute.For<IReadOnlyStateProvider>();
+            stateProvider.GetBalance(Arg.Any<Address>()).Returns(new UInt256(1));
+            GasEstimator sut = new GasEstimator(
+                Substitute.For<ITransactionProcessor>(),
+                stateProvider,
+                MainnetSpecProvider.Instance,
+                new BlocksConfig());
+
+            long result = sut.Estimate(tx, block.Header, tracer, 0);
+
+            Assert.That(result, Is.EqualTo(totalGas));
         }
 
         private class TestEnvironment
@@ -268,7 +362,7 @@ namespace Nethermind.Evm.Test.Tracing
                 _stateProvider.Commit(_specProvider.GenesisSpec);
                 _stateProvider.CommitTree(0);
 
-                VirtualMachine virtualMachine = new(TestBlockhashProvider.Instance, _specProvider, LimboLogs.Instance);
+                VirtualMachine virtualMachine = new(new TestBlockhashProvider(_specProvider), _specProvider, LimboLogs.Instance);
                 _transactionProcessor = new TransactionProcessor(_specProvider, _stateProvider,
                     virtualMachine, LimboLogs.Instance);
                 _ethereumEcdsa = new EthereumEcdsa(_specProvider.ChainId, LimboLogs.Instance);

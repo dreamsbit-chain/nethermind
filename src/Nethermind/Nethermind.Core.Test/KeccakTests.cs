@@ -82,11 +82,11 @@ namespace Nethermind.Core.Test
         [TestCase("0x0000000000000000000000000000000000000000000000000000000000000000", "0x0000000000000000000000000000000000000000000000000000000000000000", 0)]
         [TestCase("0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470", "0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470", 0)]
         [TestCase("0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470", "0x0000000000000000000000000000000000000000000000000000000000000000", 1)]
-        public void Compare(string a, string b, int result)
+        public void Compare(string a, string? b, int result)
         {
 #pragma warning disable CS8600
-            Keccak keccakA = a is null ? null : new Keccak(a);
-            Keccak keccakB = b is null ? null : new Keccak(b);
+            Hash256 keccakA = a is null ? null : new Hash256(a);
+            Hash256 keccakB = b is null ? null : new Hash256(b);
 #pragma warning restore CS8600
 #pragma warning disable CS8602
             Math.Sign(keccakA.CompareTo(keccakB)).Should().Be(result);
@@ -109,6 +109,14 @@ namespace Nethermind.Core.Test
             }
 
             Assert.That(Keccak.Compute(byteArray.AsSpan()), Is.EqualTo(Keccak.Compute(byteArray)));
+        }
+
+        [TestCase("0xAAAAAAAAAAAA", "f8e06bc47a06f221f1523d3b646226e6cdb322619be1da7bafd113e459bf4140")]
+        public void Sanity_check(string hexString, string expected)
+        {
+            byte[] bytes = Bytes.FromHexString(hexString);
+            ValueHash256 h = ValueKeccak.Compute(bytes);
+            h.Bytes.ToHexString().Should().Be(expected);
         }
     }
 }

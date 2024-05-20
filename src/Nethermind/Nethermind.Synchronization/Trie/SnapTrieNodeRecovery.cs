@@ -5,6 +5,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Nethermind.Blockchain.Synchronization;
+using Nethermind.Core.Collections;
 using Nethermind.Core.Crypto;
 using Nethermind.Core.Extensions;
 using Nethermind.Logging;
@@ -34,12 +35,18 @@ public class SnapTrieNodeRecovery : TrieNodeRecovery<GetTrieNodesRequest>
 
     protected override bool CanAllocatePeer(ISyncPeer peer) => peer.CanGetSnapData();
 
-    protected override async Task<byte[]?> RecoverRlpFromPeerBase(ValueKeccak rlpHash, ISyncPeer peer, GetTrieNodesRequest request, CancellationTokenSource cts)
+    protected override async Task<byte[]?> RecoverRlpFromPeerBase(ValueHash256 rlpHash, ISyncPeer peer, GetTrieNodesRequest request, CancellationTokenSource cts)
     {
         if (peer.TryGetSatelliteProtocol(Protocol.Snap, out ISnapSyncPeer? snapPeer))
         {
-            byte[][] rlp = await snapPeer.GetTrieNodes(request, cts.Token);
-            if (rlp.Length == 1 && rlp[0]?.Length > 0 && ValueKeccak.Compute(rlp[0]) == rlpHash)
+            request = new GetTrieNodesRequest()
+            {
+                RootHash = request.RootHash,
+                AccountAndStoragePaths = request.AccountAndStoragePaths.ToPooledList(request.AccountAndStoragePaths.Count),
+            };
+
+            IOwnedReadOnlyList<byte[]> rlp = await snapPeer.GetTrieNodes(request, cts.Token);
+            if (rlp.Count == 1 && rlp[0]?.Length > 0 && ValueKeccak.Compute(rlp[0]) == rlpHash)
             {
                 return rlp[0];
             }

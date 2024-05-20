@@ -11,6 +11,7 @@ using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Runtime.Loader;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 #if !DEBUG
@@ -24,9 +25,11 @@ using Nethermind.Consensus.AuRa;
 using Nethermind.Consensus.Clique;
 using Nethermind.Consensus.Ethash;
 using Nethermind.Core;
+using Nethermind.Core.Collections;
 using Nethermind.Core.Exceptions;
 using Nethermind.Db.Rocks;
 using Nethermind.Hive;
+using Nethermind.Init.Snapshot;
 using Nethermind.KeyStore.Config;
 using Nethermind.Logging;
 using Nethermind.Logging.NLog;
@@ -48,16 +51,15 @@ public static class Program
     private const string DefaultConfigsDirectory = "configs";
     private const string DefaultConfigFile = "configs/mainnet.cfg";
 
-    private static ILogger _logger = SimpleConsoleLogger.Instance;
+    private static ILogger _logger = new(SimpleConsoleLogger.Instance);
 
     private static readonly ProcessExitSource _processExitSource = new();
-    private static readonly TaskCompletionSource<object?> _cancelKeySource = new();
-    private static readonly TaskCompletionSource<object?> _processExit = new();
-    private static readonly TaskCompletionSource<object?> _exitSourceExit = new();
     private static readonly ManualResetEventSlim _appClosed = new(true);
 
     public static void Main(string[] args)
     {
+        // Increase regex cache size as more added in log coloring matches
+        Regex.CacheSize = 128;
 #if !DEBUG
         ResourceLeakDetector.Level = ResourceLeakDetector.DetectionLevel.Disabled;
 #endif
@@ -112,6 +114,14 @@ public static class Program
         _logger.Info("Nethermind starting initialization.");
         _logger.Info($"Client version: {ProductInfo.ClientId}");
 
+        string duplicateArgumentsList = string.Join(", ", GetDuplicateArguments(args));
+        if (!string.IsNullOrEmpty(duplicateArgumentsList))
+        {
+            _logger.Error($"Failed due to duplicated arguments - [{duplicateArgumentsList}] passed while execution");
+            Environment.ExitCode = ExitCodes.DuplicatedArguments;
+            return;
+        }
+
         AppDomain.CurrentDomain.ProcessExit += CurrentDomainOnProcessExit;
         AssemblyLoadContext.Default.ResolvingUnmanagedDll += OnResolvingUnmanagedDll;
 
@@ -119,6 +129,8 @@ public static class Program
         CommandLineApplication app = new() { Name = "Nethermind.Runner" };
         _ = app.HelpOption("-?|-h|--help");
         _ = app.VersionOption("-v|--version", () => ProductInfo.Version, GetProductInfo);
+
+        ConsoleHelpers.EnableConsoleColorOutput();
 
         CommandOption dataDir = app.Option("-dd|--datadir <dataDir>", "Data directory", CommandOptionType.SingleValue);
         CommandOption configFile = app.Option("-c|--config <configFile>", "Config file path", CommandOptionType.SingleValue);
@@ -153,13 +165,14 @@ public static class Program
             IConfigProvider configProvider = BuildConfigProvider(app, loggerConfigSource, logLevelOverride, configsDirectory, configFile);
             IInitConfig initConfig = configProvider.GetConfig<IInitConfig>();
             IKeyStoreConfig keyStoreConfig = configProvider.GetConfig<IKeyStoreConfig>();
+            ISnapshotConfig snapshotConfig = configProvider.GetConfig<ISnapshotConfig>();
             IPluginConfig pluginConfig = configProvider.GetConfig<IPluginConfig>();
 
             pluginLoader.OrderPlugins(pluginConfig);
             Console.Title = initConfig.LogFileName;
             Console.CancelKeyPress += ConsoleOnCancelKeyPress;
 
-            SetFinalDataDirectory(dataDir.HasValue() ? dataDir.Value() : null, initConfig, keyStoreConfig);
+            SetFinalDataDirectory(dataDir.HasValue() ? dataDir.Value() : null, initConfig, keyStoreConfig, snapshotConfig);
             NLogManager logManager = new(initConfig.LogFileName, initConfig.LogDirectory, initConfig.LogRules);
 
             _logger = logManager.GetClassLogger();
@@ -199,7 +212,7 @@ public static class Program
             {
                 await ethereumRunner.Start(_processExitSource.Token);
 
-                _ = await Task.WhenAny(_cancelKeySource.Task, _processExit.Task, _processExitSource.ExitTask);
+                await _processExitSource.ExitTask;
             }
             catch (TaskCanceledException)
             {
@@ -245,14 +258,39 @@ public static class Program
         }
     }
 
+    private static IEnumerable<ReadOnlyMemory<char>> GetDuplicateArguments(string[] args)
+    {
+        static ReadOnlyMemory<char> GetArgumentName(string arg) => arg.StartsWith("--") ? arg.AsMemory(2) : arg.StartsWith('-') ? arg.AsMemory(1) : ReadOnlyMemory<char>.Empty;
+        static IEnumerable<ReadOnlyMemory<char>> GetArgumentNames(IEnumerable<string> args)
+        {
+            bool lastWasArgument = false;
+            foreach (ReadOnlyMemory<char> potentialArgument in args.Select(GetArgumentName))
+            {
+                if (!lastWasArgument)
+                {
+                    bool isCurrentArgument = lastWasArgument = !potentialArgument.IsEmpty;
+                    if (isCurrentArgument)
+                    {
+                        yield return potentialArgument;
+                    }
+                }
+                else
+                {
+                    lastWasArgument = false;
+                }
+            }
+        }
+
+        return GetArgumentNames(args).GroupBy(n => n, new MemoryContentsComparer<char>())
+            .Where(g => g.Count() > 1)
+            .Select(g => g.Key);
+    }
+
     private static IntPtr OnResolvingUnmanagedDll(Assembly _, string nativeLibraryName)
     {
-        const string macosSnappyPath = "/opt/homebrew/Cellar/snappy";
         var alternativePath = nativeLibraryName switch
         {
             "libdl" => "libdl.so.2",
-            "libsnappy" or "snappy" => Directory.Exists(macosSnappyPath) ?
-                Directory.EnumerateFiles(macosSnappyPath, "libsnappy.dylib", SearchOption.AllDirectories).FirstOrDefault() : "libsnappy.so.1",
             _ => null
         };
 
@@ -456,8 +494,7 @@ public static class Program
 
     private static void CurrentDomainOnProcessExit(object? sender, EventArgs e)
     {
-        _processExitSource.Exit(ExitCodes.Ok);
-        _processExit.SetResult(null);
+        _processExitSource.Exit(ExitCodes.SigTerm);
         _appClosed.Wait();
     }
 
@@ -485,24 +522,30 @@ public static class Program
         }
     }
 
-    private static void SetFinalDataDirectory(string? dataDir, IInitConfig initConfig, IKeyStoreConfig keyStoreConfig)
+    private static void SetFinalDataDirectory(string? dataDir, IInitConfig initConfig, IKeyStoreConfig keyStoreConfig, ISnapshotConfig snapshotConfig)
     {
         if (!string.IsNullOrWhiteSpace(dataDir))
         {
             string newDbPath = initConfig.BaseDbPath.GetApplicationResourcePath(dataDir);
             string newKeyStorePath = keyStoreConfig.KeyStoreDirectory.GetApplicationResourcePath(dataDir);
             string newLogDirectory = initConfig.LogDirectory.GetApplicationResourcePath(dataDir);
+            string newSnapshotPath = snapshotConfig.SnapshotDirectory.GetApplicationResourcePath(dataDir);
 
             if (_logger.IsInfo)
             {
                 _logger.Info($"Setting BaseDbPath to: {newDbPath}, from: {initConfig.BaseDbPath}");
                 _logger.Info($"Setting KeyStoreDirectory to: {newKeyStorePath}, from: {keyStoreConfig.KeyStoreDirectory}");
                 _logger.Info($"Setting LogDirectory to: {newLogDirectory}, from: {initConfig.LogDirectory}");
+                if (snapshotConfig.Enabled)
+                {
+                    _logger.Info($"Setting SnapshotPath to: {newSnapshotPath}");
+                }
             }
 
             initConfig.BaseDbPath = newDbPath;
             keyStoreConfig.KeyStoreDirectory = newKeyStorePath;
             initConfig.LogDirectory = newLogDirectory;
+            snapshotConfig.SnapshotDirectory = newSnapshotPath;
         }
         else
         {
@@ -514,8 +557,7 @@ public static class Program
 
     private static void ConsoleOnCancelKeyPress(object? sender, ConsoleCancelEventArgs e)
     {
-        _processExitSource.Exit(ExitCodes.Ok);
-        _ = _cancelKeySource.TrySetResult(null);
+        _processExitSource.Exit(ExitCodes.SigInt);
         e.Cancel = true;
     }
 

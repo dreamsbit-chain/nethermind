@@ -60,7 +60,7 @@ namespace Nethermind.Store.Test
             stateTree.Set(TestItem.AddressA, account);
             stateTree.Commit(0);
 
-            Keccak rootHash = stateTree.RootHash;
+            Hash256 rootHash = stateTree.RootHash;
             stateTree.RootHash = null;
 
             stateTree.RootHash = rootHash;
@@ -83,16 +83,16 @@ namespace Nethermind.Store.Test
             StateTree stateTree = new(trieStore, LimboLogs.Instance);
             stateTree.Set(TestItem.AddressA, account);
             stateTree.UpdateRootHash();
-            Keccak stateRoot = stateTree.RootHash;
+            Hash256 stateRoot = stateTree.RootHash;
             stateTree.Commit(0, skipRoot);
 
             if (hasRoot)
             {
-                trieStore.LoadRlp(stateRoot).Length.Should().BeGreaterThan(0);
+                trieStore.LoadRlp(null, TreePath.Empty, stateRoot).Length.Should().BeGreaterThan(0);
             }
             else
             {
-                trieStore.Invoking(ts => ts.LoadRlp(stateRoot)).Should().Throw<TrieException>();
+                trieStore.Invoking(ts => ts.LoadRlp(null, TreePath.Empty, stateRoot)).Should().Throw<TrieException>();
             }
         }
     }

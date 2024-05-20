@@ -13,19 +13,21 @@ using Nethermind.Config;
 using Nethermind.Consensus;
 using Nethermind.Consensus.Validators;
 using Nethermind.Core;
+using Nethermind.Core.Collections;
 using Nethermind.Core.Crypto;
 using Nethermind.Core.Test.Builders;
 using Nethermind.Core.Timers;
 using Nethermind.Db;
 using Nethermind.Logging;
 using Nethermind.Specs;
-using Nethermind.State.Witnesses;
+using Nethermind.Specs.ChainSpecStyle;
+using Nethermind.State;
 using Nethermind.Stats;
 using Nethermind.Synchronization.Blocks;
-using Nethermind.Synchronization.ParallelSync;
 using Nethermind.Synchronization.Peers;
 using Nethermind.Synchronization.Reporting;
 using Nethermind.Synchronization.SnapSync;
+using Nethermind.Trie;
 using Nethermind.Trie.Pruning;
 using NSubstitute;
 using NUnit.Framework;
@@ -54,58 +56,46 @@ namespace Nethermind.Synchronization.Test
             NodeStatsManager stats = new(timerFactory, LimboLogs.Instance);
             _pool = new SyncPeerPool(_blockTree, stats, new TotalDifficultyBetterPeerStrategy(LimboLogs.Instance), LimboLogs.Instance, 25);
             SyncConfig syncConfig = new();
-            ProgressTracker progressTracker = new(_blockTree, dbProvider.StateDb, LimboLogs.Instance);
-            SnapProvider snapProvider = new(progressTracker, dbProvider, LimboLogs.Instance);
 
-            TrieStore trieStore = new(_stateDb, LimboLogs.Instance);
-            SyncProgressResolver resolver = new(
-                _blockTree,
-                _receiptStorage,
-                _stateDb,
-                trieStore,
-                progressTracker,
-                syncConfig,
-                LimboLogs.Instance);
+            NodeStorage nodeStorage = new NodeStorage(_stateDb);
+            TrieStore trieStore = new(nodeStorage, LimboLogs.Instance);
             TotalDifficultyBetterPeerStrategy bestPeerStrategy = new(LimboLogs.Instance);
-            MultiSyncModeSelector syncModeSelector = new(resolver, _pool, syncConfig, No.BeaconSync, bestPeerStrategy, LimboLogs.Instance);
             Pivot pivot = new(syncConfig);
-            SyncReport syncReport = new(_pool, stats, syncModeSelector, syncConfig, pivot, LimboLogs.Instance);
             BlockDownloaderFactory blockDownloaderFactory = new(
                 MainnetSpecProvider.Instance,
-                _blockTree,
-                _receiptStorage,
                 Always.Valid,
                 Always.Valid,
-                _pool,
                 new TotalDifficultyBetterPeerStrategy(LimboLogs.Instance),
-                syncReport,
                 LimboLogs.Instance);
+
+            IStateReader stateReader = new StateReader(trieStore, _codeDb, LimboLogs.Instance);
+
             _synchronizer = new Synchronizer(
                 dbProvider,
+                nodeStorage,
                 MainnetSpecProvider.Instance,
                 _blockTree,
                 _receiptStorage,
                 _pool,
                 stats,
-                syncModeSelector,
                 syncConfig,
-                snapProvider,
                 blockDownloaderFactory,
                 pivot,
-                syncReport,
                 Substitute.For<IProcessExitSource>(),
+                bestPeerStrategy,
+                new ChainSpec(),
+                stateReader,
                 LimboLogs.Instance);
             _syncServer = new SyncServer(
-                trieStore.AsKeyValueStore(),
+                trieStore.TrieNodeRlpStore,
                 _codeDb,
                 _blockTree,
                 _receiptStorage,
                 Always.Valid,
                 Always.Valid,
                 _pool,
-                syncModeSelector,
+                _synchronizer.SyncModeSelector,
                 quickConfig,
-                new WitnessCollector(new MemDb(), LimboLogs.Instance),
                 Policy.FullGossip,
                 MainnetSpecProvider.Instance,
                 LimboLogs.Instance);
@@ -116,6 +106,10 @@ namespace Nethermind.Synchronization.Test
         {
             await _pool.StopAsync();
             await _synchronizer.StopAsync();
+
+            _pool.Dispose();
+            _synchronizer.Dispose();
+            _syncServer.Dispose();
         }
 
         private IDb _stateDb = null!;
@@ -331,7 +325,7 @@ namespace Nethermind.Synchronization.Test
             minerTree.UpdateMainChain(newBlock);
 
             ISyncPeer miner2 = Substitute.For<ISyncPeer>();
-            miner2.GetHeadBlockHeader(Arg.Any<Keccak>(), Arg.Any<CancellationToken>()).Returns(miner1.GetHeadBlockHeader(null, CancellationToken.None));
+            miner2.GetHeadBlockHeader(Arg.Any<Hash256>(), Arg.Any<CancellationToken>()).Returns(miner1.GetHeadBlockHeader(null, CancellationToken.None));
             miner2.Node.Id.Returns(TestItem.PublicKeyB);
 
             Assert.That((await miner2.GetHeadBlockHeader(null, Arg.Any<CancellationToken>()))?.Number, Is.EqualTo(newBlock.Number), "number as expected");
@@ -369,7 +363,7 @@ namespace Nethermind.Synchronization.Test
             minerTree.UpdateMainChain(newBlock);
 
             ISyncPeer miner2 = Substitute.For<ISyncPeer>();
-            miner2.GetHeadBlockHeader(Arg.Any<Keccak>(), Arg.Any<CancellationToken>()).Returns(miner1.GetHeadBlockHeader(null, CancellationToken.None));
+            miner2.GetHeadBlockHeader(Arg.Any<Hash256>(), Arg.Any<CancellationToken>()).Returns(miner1.GetHeadBlockHeader(null, CancellationToken.None));
             miner2.Node.Id.Returns(TestItem.PublicKeyB);
 
             Assert.That((await miner2.GetHeadBlockHeader(null, Arg.Any<CancellationToken>()))?.Number, Is.EqualTo(newBlock.Number), "number as expected");
@@ -386,10 +380,10 @@ namespace Nethermind.Synchronization.Test
         public void Can_retrieve_node_values()
         {
             _stateDb.Set(TestItem.KeccakA, TestItem.RandomDataA);
-            byte[]?[] data = _syncServer.GetNodeData(new[] { TestItem.KeccakA, TestItem.KeccakB });
+            IOwnedReadOnlyList<byte[]?> data = _syncServer.GetNodeData(new[] { TestItem.KeccakA, TestItem.KeccakB }, CancellationToken.None);
 
             Assert.That(data, Is.Not.Null);
-            Assert.That(data.Length, Is.EqualTo(2), "data.Length");
+            Assert.That(data.Count, Is.EqualTo(2), "data.Length");
             Assert.That(data[0], Is.EqualTo(TestItem.RandomDataA), "data[0]");
             Assert.That(data[1], Is.EqualTo(null), "data[1]");
         }

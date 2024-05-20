@@ -27,7 +27,7 @@ namespace Nethermind.Network.Test.Rlpx.Handshake
         private void TestEncodeDecode(IEthereumEcdsa ecdsa)
         {
             AuthMessage authMessage = new();
-            authMessage.EphemeralPublicHash = new Keccak(new byte[AuthMessageSerializer.EphemeralHashLength]);
+            authMessage.EphemeralPublicHash = new Hash256(new byte[AuthMessageSerializer.EphemeralHashLength]);
             authMessage.Nonce = new byte[AuthMessageSerializer.NonceLength];
             authMessage.Signature = ecdsa.Sign(_privateKey, Keccak.Compute("anything"));
             _random.NextBytes(authMessage.EphemeralPublicHash.Bytes);
@@ -58,7 +58,6 @@ namespace Nethermind.Network.Test.Rlpx.Handshake
 
         [TestCase(BlockchainIds.Mainnet)]
         [TestCase(BlockchainIds.Sepolia)]
-        [TestCase(BlockchainIds.Kovan)]
         public void Encode_decode_with_eip155(int chainId)
         {
             EthereumEcdsa ecdsa = new(BlockchainIds.Olympic, LimboLogs.Instance);

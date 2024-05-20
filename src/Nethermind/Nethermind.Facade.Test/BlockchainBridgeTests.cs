@@ -29,6 +29,7 @@ using NSubstitute;
 using NUnit.Framework;
 using Nethermind.Config;
 using Nethermind.Evm;
+using Nethermind.State;
 
 namespace Nethermind.Facade.Test
 {
@@ -60,9 +61,14 @@ namespace Nethermind.Facade.Test
             _ethereumEcdsa = Substitute.For<IEthereumEcdsa>();
             _specProvider = MainnetSpecProvider.Instance;
 
+            ReadOnlyDbProvider dbProvider = new ReadOnlyDbProvider(_dbProvider, false);
+            IReadOnlyTrieStore trieStore = new TrieStore(_dbProvider.StateDb, LimboLogs.Instance).AsReadOnly();
+
+            IWorldStateManager readOnlyWorldStateManager =
+                new ReadOnlyWorldStateManager(dbProvider, trieStore, LimboLogs.Instance);
+
             ReadOnlyTxProcessingEnv processingEnv = new(
-                new ReadOnlyDbProvider(_dbProvider, false),
-                new TrieStore(_dbProvider.StateDb, LimboLogs.Instance).AsReadOnly(),
+                readOnlyWorldStateManager,
                 new ReadOnlyBlockTree(_blockTree),
                 _specProvider,
                 LimboLogs.Instance);
@@ -118,26 +124,6 @@ namespace Nethermind.Facade.Test
         }
 
         [Test]
-        public void Estimate_gas_returns_the_estimate_from_the_tracer()
-        {
-            _timestamper.UtcNow = DateTime.MinValue;
-            _timestamper.Add(TimeSpan.FromDays(123));
-            BlockHeader header = Build.A.BlockHeader.WithNumber(10).TestObject;
-            Transaction tx = new();
-            tx.Data = new byte[0];
-            tx.GasLimit = Transaction.BaseTxGasCost;
-
-            var gas = _blockchainBridge.EstimateGas(header, tx, default);
-            gas.GasSpent.Should().Be(Transaction.BaseTxGasCost);
-
-            _transactionProcessor.Received().CallAndRestore(
-                tx,
-                Arg.Is<BlockExecutionContext>(blkCtx =>
-                    blkCtx.Header.Number == 11 && blkCtx.Header.Timestamp == ((ITimestamper)_timestamper).UnixTime.Seconds),
-                Arg.Is<CancellationTxTracer>(t => t.InnerTracer is EstimateGasTracer));
-        }
-
-        [Test]
         public void Call_uses_valid_post_merge_and_random_value()
         {
             BlockHeader header = Build.A.BlockHeader
@@ -151,7 +137,7 @@ namespace Nethermind.Facade.Test
             _transactionProcessor.Received().CallAndRestore(
                 tx,
                 Arg.Is<BlockExecutionContext>(blkCtx =>
-                blkCtx.Header.IsPostMerge && blkCtx.Header.Random == TestItem.KeccakA),
+                    blkCtx.Header.IsPostMerge && blkCtx.Header.Random == TestItem.KeccakA),
                 Arg.Any<ITxTracer>());
         }
 
@@ -204,9 +190,14 @@ namespace Nethermind.Facade.Test
         [TestCase(0)]
         public void Bridge_head_is_correct(long headNumber)
         {
+            ReadOnlyDbProvider dbProvider = new ReadOnlyDbProvider(_dbProvider, false);
+            IReadOnlyTrieStore trieStore = new TrieStore(_dbProvider.StateDb, LimboLogs.Instance).AsReadOnly();
+
+            IWorldStateManager readOnlyWorldStateManager =
+                new ReadOnlyWorldStateManager(dbProvider, trieStore, LimboLogs.Instance);
+
             ReadOnlyTxProcessingEnv processingEnv = new(
-                new ReadOnlyDbProvider(_dbProvider, false),
-                new TrieStore(_dbProvider.StateDb, LimboLogs.Instance).AsReadOnly(),
+                readOnlyWorldStateManager,
                 new ReadOnlyBlockTree(_blockTree),
                 _specProvider,
                 LimboLogs.Instance);
@@ -239,8 +230,8 @@ namespace Nethermind.Facade.Test
         [TestCase(false, false)]
         public void GetReceiptAndGasInfo_returns_correct_results(bool isCanonical, bool postEip4844)
         {
-            Keccak txHash = TestItem.KeccakA;
-            Keccak blockHash = TestItem.KeccakB;
+            Hash256 txHash = TestItem.KeccakA;
+            Hash256 blockHash = TestItem.KeccakB;
             UInt256 effectiveGasPrice = 123;
 
             Transaction tx = postEip4844

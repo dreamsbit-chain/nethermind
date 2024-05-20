@@ -39,14 +39,16 @@ public partial class EngineModuleTests
             .Returns(c =>
             {
                 PayloadAttributes payloadAttributes = c.Arg<PayloadAttributes>();
-                payloadAttributes.SuggestedFeeRecipient = TestItem.AddressA;
-                payloadAttributes.PrevRandao = TestItem.KeccakA;
-                payloadAttributes.Timestamp += 1;
-                payloadAttributes.GasLimit = 10_000_000L;
-                return payloadAttributes;
+                return new BoostPayloadAttributes
+                {
+                    SuggestedFeeRecipient = TestItem.AddressA,
+                    PrevRandao = TestItem.KeccakA,
+                    Timestamp = payloadAttributes.Timestamp + 1,
+                    GasLimit = 10_000_000L,
+                };
             });
 
-        BoostBlockImprovementContextFactory improvementContextFactory = new(chain.BlockProductionTrigger, TimeSpan.FromSeconds(5), boostRelay, chain.StateReader);
+        BoostBlockImprovementContextFactory improvementContextFactory = new(chain.PostMergeBlockProducer!, TimeSpan.FromSeconds(5), boostRelay, chain.StateReader);
         TimeSpan timePerSlot = TimeSpan.FromSeconds(10);
         chain.PayloadPreparationService = new PayloadPreparationService(
             chain.PostMergeBlockProducer!,
@@ -56,9 +58,9 @@ public partial class EngineModuleTests
             timePerSlot);
 
         IEngineRpcModule rpc = CreateEngineModule(chain);
-        Keccak startingHead = chain.BlockTree.HeadHash;
+        Hash256 startingHead = chain.BlockTree.HeadHash;
         ulong timestamp = Timestamper.UnixTime.Seconds;
-        Keccak random = Keccak.Zero;
+        Hash256 random = Keccak.Zero;
         Address feeRecipient = Address.Zero;
 
         BoostExecutionPayloadV1? sentItem = null;
@@ -149,7 +151,7 @@ public partial class EngineModuleTests
 
         DefaultHttpClient defaultHttpClient = new(mockHttp.ToHttpClient(), serializer, chain.LogManager, 1, 100);
         BoostRelay boostRelay = new(defaultHttpClient, relayUrl);
-        BoostBlockImprovementContextFactory improvementContextFactory = new(chain.BlockProductionTrigger, TimeSpan.FromSeconds(5000), boostRelay, chain.StateReader);
+        BoostBlockImprovementContextFactory improvementContextFactory = new(chain.PostMergeBlockProducer!, TimeSpan.FromSeconds(5000), boostRelay, chain.StateReader);
         TimeSpan timePerSlot = TimeSpan.FromSeconds(1000);
         chain.PayloadPreparationService = new PayloadPreparationService(
             chain.PostMergeBlockProducer!,
@@ -159,7 +161,7 @@ public partial class EngineModuleTests
             timePerSlot);
 
         IEngineRpcModule rpc = CreateEngineModule(chain);
-        Keccak startingHead = chain.BlockTree.HeadHash;
+        Hash256 startingHead = chain.BlockTree.HeadHash;
 
         ManualResetEvent wait = new(false);
         chain.PayloadPreparationService.BlockImproved += (_, _) => wait.Set();
@@ -190,13 +192,13 @@ public partial class EngineModuleTests
         {
             IBoostRelay boostRelay = Substitute.For<IBoostRelay>();
             boostRelay.GetPayloadAttributes(Arg.Any<PayloadAttributes>(), Arg.Any<CancellationToken>())
-                .Returns(c => c.Arg<PayloadAttributes>());
+                .Returns(c => (BoostPayloadAttributes)c.Arg<PayloadAttributes>());
 
-            improvementContextFactory = new BoostBlockImprovementContextFactory(chain.BlockProductionTrigger, TimeSpan.FromSeconds(5), boostRelay, chain.StateReader);
+            improvementContextFactory = new BoostBlockImprovementContextFactory(chain.PostMergeBlockProducer!, TimeSpan.FromSeconds(5), boostRelay, chain.StateReader);
         }
         else
         {
-            improvementContextFactory = new BlockImprovementContextFactory(chain.BlockProductionTrigger, TimeSpan.FromSeconds(5));
+            improvementContextFactory = new BlockImprovementContextFactory(chain.PostMergeBlockProducer!, TimeSpan.FromSeconds(5));
         }
 
         TimeSpan timePerSlot = TimeSpan.FromSeconds(10);
@@ -208,13 +210,13 @@ public partial class EngineModuleTests
             timePerSlot);
 
         IEngineRpcModule rpc = CreateEngineModule(chain);
-        Keccak startingHead = chain.BlockTree.HeadHash;
+        Hash256 startingHead = chain.BlockTree.HeadHash;
         ulong timestamp = Timestamper.UnixTime.Seconds;
-        Keccak random = Keccak.Zero;
+        Hash256 random = Keccak.Zero;
         Address feeRecipient = Address.Zero;
 
         string payloadId = rpc.engine_forkchoiceUpdatedV1(new ForkchoiceStateV1(startingHead, Keccak.Zero, startingHead),
-                new PayloadAttributes { Timestamp = timestamp, SuggestedFeeRecipient = feeRecipient, PrevRandao = random, GasLimit = 10_000_000L }).Result.Data
+                new PayloadAttributes { Timestamp = timestamp, SuggestedFeeRecipient = feeRecipient, PrevRandao = random }).Result.Data
             .PayloadId!;
 
         ResultWrapper<ExecutionPayload?> response = await rpc.engine_getPayloadV1(Bytes.FromHexString(payloadId));

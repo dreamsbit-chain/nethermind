@@ -77,17 +77,9 @@ public abstract class ConfigFileTestsBase
     protected IEnumerable<string> ChiadoConfigs
         => Configs.Where(config => config.Contains("chiado"));
 
-    [ConfigFileGroup("goerli")]
-    protected IEnumerable<string> GoerliConfigs
-        => Configs.Where(config => config.Contains("goerli"));
-
-    [ConfigFileGroup("rinkeby")]
-    protected IEnumerable<string> RinkebyConfigs
-        => Configs.Where(config => config.Contains("rinkeby"));
-
-    [ConfigFileGroup("kovan")]
-    protected IEnumerable<string> KovanConfigs
-        => Configs.Where(config => config.Contains("kovan"));
+    [ConfigFileGroup("holesky")]
+    protected IEnumerable<string> HoleskyConfigs
+        => Configs.Where(config => config.Contains("holesky"));
 
     [ConfigFileGroup("spaceneth")]
     protected IEnumerable<string> SpacenethConfigs
@@ -107,16 +99,11 @@ public abstract class ConfigFileTestsBase
             .Union(GnosisConfigs)
             .Union(ChiadoConfigs)
             .Union(VoltaConfigs)
-            .Union(EnergyConfigs)
-            .Union(KovanConfigs);
+            .Union(EnergyConfigs);
 
     [ConfigFileGroup("aura_non_validating")]
     protected IEnumerable<string> AuraNonValidatingConfigs
         => AuraConfigs.Where(c => !c.Contains("validator"));
-
-    [ConfigFileGroup("clique")]
-    protected IEnumerable<string> CliqueConfigs
-        => RinkebyConfigs.Union(GoerliConfigs);
 
     protected IEnumerable<string> Resolve(string configWildcard)
     {

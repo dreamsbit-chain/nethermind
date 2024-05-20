@@ -5,6 +5,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
+using System.Threading.Tasks;
 using FluentAssertions;
 using Nethermind.Blockchain.Blocks;
 using Nethermind.Blockchain.Receipts;
@@ -75,7 +76,7 @@ namespace Nethermind.Blockchain.Test.Receipts
         [Test, Timeout(Timeout.MaxTestTime)]
         public void Returns_null_for_missing_tx()
         {
-            Keccak blockHash = _storage.FindBlockHash(Keccak.Zero);
+            Hash256 blockHash = _storage.FindBlockHash(Keccak.Zero);
             blockHash.Should().BeNull();
         }
 
@@ -252,7 +253,7 @@ namespace Nethermind.Blockchain.Test.Receipts
             _storage.Insert(anotherBlock, new[] { Build.A.Receipt.TestObject }, ensureCanonical);
             _blockTree.FindBlockHash(anotherBlock.Number).Returns(anotherBlock.Hash);
 
-            Keccak findBlockHash = _storage.FindBlockHash(receipts[0].TxHash!);
+            Hash256 findBlockHash = _storage.FindBlockHash(receipts[0].TxHash!);
             if (ensureCanonical)
             {
                 findBlockHash.Should().Be(anotherBlock.Hash!);
@@ -289,17 +290,22 @@ namespace Nethermind.Blockchain.Test.Receipts
             _receiptsDb.GetColumnDb(ReceiptsColumns.Transactions)[receipts[0].TxHash!.Bytes].Should().BeNull();
         }
 
-        [Test]
-        public void Should_not_index_tx_hash_if_blockNumber_is_negative()
+        [TestCase(1L, false)]
+        [TestCase(10L, false)]
+        [TestCase(11L, true)]
+        public void Should_only_prune_index_tx_hashes_if_blockNumber_is_bigger_than_lookupLimit(long blockNumber, bool WillPruneOldIndicies)
         {
             _receiptConfig.TxLookupLimit = 10;
             CreateStorage();
             _blockTree.BlockAddedToMain +=
-                Raise.EventWith(new BlockReplacementEventArgs(Build.A.Block.WithNumber(1).TestObject));
+                Raise.EventWith(new BlockReplacementEventArgs(Build.A.Block.WithNumber(blockNumber).TestObject));
             Thread.Sleep(100);
             IEnumerable<ICall> calls = _blockTree.ReceivedCalls()
-                .Where(call => !call.GetMethodInfo().Name.EndsWith(nameof(_blockTree.BlockAddedToMain)));
-            calls.Should().BeEmpty();
+                .Where(call => call.GetMethodInfo().Name.EndsWith(nameof(_blockTree.FindBlock)));
+            if (WillPruneOldIndicies)
+                calls.Should().NotBeEmpty();
+            else
+                calls.Should().BeEmpty();
         }
 
         [Test]
@@ -336,6 +342,54 @@ namespace Nethermind.Blockchain.Test.Receipts
                 () => _receiptsDb.GetColumnDb(ReceiptsColumns.Transactions)[receipts[0].TxHash!.Bytes],
                 Is.Null.After(1000, 100)
                 );
+        }
+
+        [Test]
+        public async Task When_NewHeadBlock_Remove_TxIndex_OfRemovedBlock_Unless_ItsAlsoInNewBlock()
+        {
+            _receiptConfig.CompactTxIndex = _useCompactReceipts;
+            CreateStorage();
+            (Block block, TxReceipt[] receipts) = InsertBlock();
+            Block block2 = Build.A.Block
+                .WithParent(block)
+                .WithNumber(2)
+                .WithTransactions(Build.A.Transaction.SignedAndResolved(TestItem.PrivateKeyC).TestObject)
+                .TestObject;
+            _blockTree.FindBestSuggestedHeader().Returns(block2.Header);
+            _blockTree.BlockAddedToMain += Raise.EventWith(new BlockReplacementEventArgs(block2));
+
+            if (_receiptConfig.CompactTxIndex)
+            {
+                _receiptsDb.GetColumnDb(ReceiptsColumns.Transactions)[block.Transactions[0].Hash!.Bytes].Should().BeEquivalentTo(Rlp.Encode(block.Number).Bytes);
+            }
+            else
+            {
+                _receiptsDb.GetColumnDb(ReceiptsColumns.Transactions)[block.Transactions[0].Hash!.Bytes].Should().BeEquivalentTo(block.Hash!.Bytes.ToArray());
+            }
+
+            Block block3 = Build.A.Block
+                .WithNumber(1)
+                .WithTransactions(block2.Transactions)
+                .WithExtraData(new byte[1])
+                .TestObject;
+            Block block4 = Build.A.Block
+                .WithNumber(2)
+                .WithTransactions(block.Transactions)
+                .WithExtraData(new byte[1])
+                .TestObject;
+            _blockTree.FindBestSuggestedHeader().Returns(block4.Header);
+            _blockTree.BlockAddedToMain += Raise.EventWith(new BlockReplacementEventArgs(block3, block));
+            _blockTree.BlockAddedToMain += Raise.EventWith(new BlockReplacementEventArgs(block4, block2));
+
+            await Task.Delay(100);
+            if (_receiptConfig.CompactTxIndex)
+            {
+                _receiptsDb.GetColumnDb(ReceiptsColumns.Transactions)[block4.Transactions[0].Hash!.Bytes].Should().BeEquivalentTo(Rlp.Encode(block4.Number).Bytes);
+            }
+            else
+            {
+                _receiptsDb.GetColumnDb(ReceiptsColumns.Transactions)[block4.Transactions[0].Hash!.Bytes].Should().BeEquivalentTo(block4.Hash!.Bytes.ToArray());
+            }
         }
 
         [Test]
@@ -385,7 +439,7 @@ namespace Nethermind.Blockchain.Test.Receipts
                 _blockTree.FindBestSuggestedHeader().Returns(farHead);
             }
 
-            if (headNumber != null)
+            if (headNumber is not null)
             {
                 BlockHeader farHead = Build.A.BlockHeader
                     .WithNumber(headNumber.Value)

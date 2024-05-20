@@ -16,41 +16,41 @@ namespace Nethermind.Blockchain.Test.Receipts;
 public class KeccaksIteratorTests
 {
     [TestCaseSource(nameof(TestKeccaks))]
-    public void TestKeccakIteratorDecodeCorrectly(Keccak[] keccak)
+    public void TestKeccakIteratorDecodeCorrectly(Hash256[] keccak)
     {
-        Keccak[] keccaks = new[] { TestItem.KeccakA, Keccak.Zero };
-        Keccak[] decoded = EncodeDecode(keccaks);
+        Hash256[] keccaks = new[] { TestItem.KeccakA, Keccak.Zero };
+        Hash256[] decoded = EncodeDecode(keccaks);
         decoded.Should().BeEquivalentTo(keccaks);
     }
 
     [TestCaseSource(nameof(TestKeccaks))]
-    public void TestKeccakIteratorDecodedCorrectlyWithReset(Keccak[] keccak)
+    public void TestKeccakIteratorDecodedCorrectlyWithReset(Hash256[] keccak)
     {
-        Keccak[] keccaks = new[] { TestItem.KeccakA, Keccak.Zero };
-        Keccak[] decoded = EncodeDecodeReDecoded(keccaks);
+        Hash256[] keccaks = new[] { TestItem.KeccakA, Keccak.Zero };
+        Hash256[] decoded = EncodeDecodeReDecoded(keccaks);
         decoded.Should().BeEquivalentTo(keccaks);
     }
 
-    public static IEnumerable<Keccak[]> TestKeccaks()
+    public static IEnumerable<Hash256[]> TestKeccaks()
     {
-        yield return Array.Empty<Keccak>();
+        yield return Array.Empty<Hash256>();
         yield return new[] { TestItem.KeccakA };
         yield return new[] { Keccak.Zero };
         yield return new[] { TestItem.KeccakA, Keccak.Zero };
         yield return new[] { Keccak.Zero, TestItem.KeccakA };
         yield return new[] { TestItem.KeccakA, TestItem.KeccakB, TestItem.KeccakC, Keccak.Zero, };
-        yield return new[] { TestItem.KeccakA, new Keccak("0xffffffffffffffffffffffffffffffff00000000000000000000000000000000") };
-        yield return new[] { TestItem.KeccakA, new Keccak("0x00000000000000000000000000000000ffffffffffffffffffffffffffffffff") };
-        yield return new[] { TestItem.KeccakA, new Keccak("0xffffffffffffffffffffffffffffffff00000000000000000000000000000000"), TestItem.KeccakB };
-        yield return new[] { TestItem.KeccakA, new Keccak("0x00000000000000000000000000000000ffffffffffffffffffffffffffffffff"), TestItem.KeccakB };
-        yield return new[] { new Keccak("0xffffffffffffffffffffffffffffffff00000000000000000000000000000000"), TestItem.KeccakB };
-        yield return new[] { new Keccak("0x00000000000000000000000000000000ffffffffffffffffffffffffffffffff"), TestItem.KeccakB };
+        yield return new[] { TestItem.KeccakA, new Hash256("0xffffffffffffffffffffffffffffffff00000000000000000000000000000000") };
+        yield return new[] { TestItem.KeccakA, new Hash256("0x00000000000000000000000000000000ffffffffffffffffffffffffffffffff") };
+        yield return new[] { TestItem.KeccakA, new Hash256("0xffffffffffffffffffffffffffffffff00000000000000000000000000000000"), TestItem.KeccakB };
+        yield return new[] { TestItem.KeccakA, new Hash256("0x00000000000000000000000000000000ffffffffffffffffffffffffffffffff"), TestItem.KeccakB };
+        yield return new[] { new Hash256("0xffffffffffffffffffffffffffffffff00000000000000000000000000000000"), TestItem.KeccakB };
+        yield return new[] { new Hash256("0x00000000000000000000000000000000ffffffffffffffffffffffffffffffff"), TestItem.KeccakB };
     }
 
-    private Keccak[] EncodeDecode(Keccak[] input)
+    private Hash256[] EncodeDecode(Hash256[] input)
     {
         int totalLength = 0;
-        foreach (Keccak keccak in input)
+        foreach (Hash256 keccak in input)
         {
             totalLength += Rlp.LengthOf(keccak.Bytes.WithoutLeadingZerosOrEmpty());
         }
@@ -58,27 +58,27 @@ public class KeccaksIteratorTests
 
         RlpStream rlpStream = new RlpStream(sequenceLength);
         rlpStream.StartSequence(totalLength);
-        foreach (Keccak keccak in input)
+        foreach (Hash256 keccak in input)
         {
             rlpStream.Encode(keccak.Bytes.WithoutLeadingZerosOrEmpty());
         }
 
         Span<byte> buffer = stackalloc byte[32];
-        KeccaksIterator iterator = new(rlpStream.Data, buffer);
+        KeccaksIterator iterator = new(rlpStream.Data.AsSpan(), buffer);
 
-        List<Keccak> decoded = new();
-        while (iterator.TryGetNext(out KeccakStructRef kec))
+        List<Hash256> decoded = new();
+        while (iterator.TryGetNext(out Hash256StructRef kec))
         {
-            decoded.Add(kec.ToKeccak());
+            decoded.Add(kec.ToCommitment());
         }
 
         return decoded.ToArray();
     }
 
-    private Keccak[] EncodeDecodeReDecoded(Keccak[] input)
+    private Hash256[] EncodeDecodeReDecoded(Hash256[] input)
     {
         int totalLength = 0;
-        foreach (Keccak keccak in input)
+        foreach (Hash256 keccak in input)
         {
             totalLength += Rlp.LengthOf(keccak.Bytes.WithoutLeadingZerosOrEmpty());
         }
@@ -86,26 +86,26 @@ public class KeccaksIteratorTests
 
         RlpStream rlpStream = new RlpStream(sequenceLength);
         rlpStream.StartSequence(totalLength);
-        foreach (Keccak keccak in input)
+        foreach (Hash256 keccak in input)
         {
             rlpStream.Encode(keccak.Bytes.WithoutLeadingZerosOrEmpty());
         }
 
         Span<byte> buffer = stackalloc byte[32];
-        KeccaksIterator iterator = new(rlpStream.Data, buffer);
+        KeccaksIterator iterator = new(rlpStream.Data.AsSpan(), buffer);
 
-        List<Keccak> decoded = new();
-        while (iterator.TryGetNext(out KeccakStructRef kec))
+        List<Hash256> decoded = new();
+        while (iterator.TryGetNext(out Hash256StructRef kec))
         {
-            decoded.Add(kec.ToKeccak());
+            decoded.Add(kec.ToCommitment());
         }
 
         decoded.Clear();
         iterator.Reset();
 
-        while (iterator.TryGetNext(out KeccakStructRef kec))
+        while (iterator.TryGetNext(out Hash256StructRef kec))
         {
-            decoded.Add(kec.ToKeccak());
+            decoded.Add(kec.ToCommitment());
         }
 
         return decoded.ToArray();

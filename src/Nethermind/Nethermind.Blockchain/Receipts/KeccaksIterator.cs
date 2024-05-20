@@ -15,7 +15,7 @@ namespace Nethermind.Blockchain.Receipts
         private readonly Span<byte> _buffer;
         public long Index { get; private set; }
 
-        public KeccaksIterator(Span<byte> data, Span<byte> buffer)
+        public KeccaksIterator(ReadOnlySpan<byte> data, Span<byte> buffer)
         {
             if (buffer.Length != 32) throw new ArgumentException("Buffer must be 32 bytes long");
             _decoderContext = new Rlp.ValueDecoderContext(data);
@@ -25,7 +25,7 @@ namespace Nethermind.Blockchain.Receipts
             Index = -1;
         }
 
-        public bool TryGetNext(out KeccakStructRef current)
+        public bool TryGetNext(out Hash256StructRef current)
         {
             if (_decoderContext.Position < _length + _startPosition)
             {
@@ -35,7 +35,7 @@ namespace Nethermind.Blockchain.Receipts
             }
             else
             {
-                current = new KeccakStructRef(Keccak.Zero.Bytes);
+                current = new Hash256StructRef(Keccak.Zero.Bytes);
                 return false;
             }
         }

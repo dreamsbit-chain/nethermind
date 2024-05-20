@@ -21,9 +21,9 @@ namespace Nethermind.TxPool.Filters
             _logger = logger;
         }
 
-        public AcceptTxResult Accept(Transaction tx, TxFilteringState state, TxHandlingOptions handlingOptions)
+        public AcceptTxResult Accept(Transaction tx, ref TxFilteringState state, TxHandlingOptions handlingOptions)
         {
-            Account account = state.SenderAccount;
+            AccountStruct account = state.SenderAccount;
             UInt256 balance = account.Balance;
 
             bool isNotLocal = (handlingOptions & TxHandlingOptions.PersistentBroadcast) == 0;
@@ -43,8 +43,7 @@ namespace Nethermind.TxPool.Filters
                     AcceptTxResult.InsufficientFunds.WithMessage($"Balance is {balance} less than sending value {tx.Value}");
             }
 
-            if (UInt256.MultiplyOverflow(tx.MaxFeePerGas, (UInt256)tx.GasLimit, out UInt256 txCostAndValue) ||
-                UInt256.AddOverflow(txCostAndValue, tx.Value, out txCostAndValue))
+            if (tx.IsOverflowInTxCostAndValue(out UInt256 txCostAndValue))
             {
                 Metrics.PendingTransactionsBalanceBelowValue++;
                 if (_logger.IsTrace)

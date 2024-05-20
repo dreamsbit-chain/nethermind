@@ -5,6 +5,7 @@ using System.Threading.Tasks;
 using Nethermind.Blockchain.Receipts;
 using Nethermind.Blockchain.Synchronization;
 using Nethermind.Core.Specs;
+using Nethermind.Core.Test.Builders;
 using Nethermind.Db;
 using Nethermind.Specs;
 using Nethermind.JsonRpc.Modules;
@@ -15,6 +16,7 @@ using Nethermind.Db.Blooms;
 using Nethermind.Facade;
 using Nethermind.Facade.Eth;
 using Nethermind.JsonRpc.Exceptions;
+using Nethermind.JsonRpc.Modules.Eth.FeeHistory;
 using Nethermind.JsonRpc.Modules.Eth.GasPrice;
 using Nethermind.State;
 using Nethermind.TxPool;
@@ -32,19 +34,14 @@ public class BoundedModulePoolTests
     private BoundedModulePool<IEthRpcModule> _modulePool = null!;
 
     [SetUp]
-    public async Task Initialize()
+    public Task Initialize()
     {
-        ISpecProvider specProvider = MainnetSpecProvider.Instance;
         ITxPool txPool = NullTxPool.Instance;
-        IDbProvider dbProvider = await TestMemDbProvider.InitAsync();
 
-        BlockTree blockTree = new(
-            dbProvider,
-            new ChainLevelInfoRepository(dbProvider.BlockInfosDb),
-            specProvider,
-            new BloomStorage(new BloomConfig(), dbProvider.HeadersDb, new InMemoryDictionaryFileStoreFactory()),
-            new SyncConfig(),
-            LimboLogs.Instance);
+        BlockTree blockTree = Build.A
+            .BlockTree()
+            .WithRealBloom
+            .TestObject;
 
         _modulePool = new BoundedModulePool<IEthRpcModule>(new EthModuleFactory(
             txPool,
@@ -58,8 +55,11 @@ public class BoundedModulePoolTests
             Substitute.For<ISpecProvider>(),
             Substitute.For<IReceiptStorage>(),
             Substitute.For<IGasPriceOracle>(),
-            Substitute.For<IEthSyncingInfo>()),
+            Substitute.For<IEthSyncingInfo>(),
+            Substitute.For<IFeeHistoryOracle>()),
              1, 1000);
+
+        return Task.CompletedTask;
     }
 
     [Test]

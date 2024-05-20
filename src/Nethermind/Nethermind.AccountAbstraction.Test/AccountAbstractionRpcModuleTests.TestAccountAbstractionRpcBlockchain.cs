@@ -12,6 +12,7 @@ using Nethermind.AccountAbstraction.Data;
 using Nethermind.AccountAbstraction.Executor;
 using Nethermind.AccountAbstraction.Source;
 using Nethermind.Blockchain;
+using Nethermind.Blockchain.Blocks;
 using Nethermind.Blockchain.Contracts.Json;
 using Nethermind.Consensus;
 using Nethermind.Consensus.Comparers;
@@ -80,7 +81,7 @@ namespace Nethermind.AccountAbstraction.Test
 
             public IAccountAbstractionRpcModule AccountAbstractionRpcModule { get; set; } = Substitute.For<IAccountAbstractionRpcModule>();
             public ManualGasLimitCalculator GasLimitCalculator = new() { GasLimit = 10_000_000 };
-            private AccountAbstractionConfig _accountAbstractionConfig = new AccountAbstractionConfig()
+            private readonly AccountAbstractionConfig _accountAbstractionConfig = new AccountAbstractionConfig()
             {
                 Enabled = true,
                 EntryPointContractAddresses = "0xb0894727fe4ff102e1f1c8a16f38afc7b859f215,0x96cc609c8f5458fb8a7da4d94b678e38ebf3d04e",
@@ -99,9 +100,8 @@ namespace Nethermind.AccountAbstraction.Test
                 SpecProvider.UpdateMergeTransitionInfo(1, 0);
 
                 BlockProducerEnvFactory blockProducerEnvFactory = new BlockProducerEnvFactory(
-                    DbProvider,
+                    WorldStateManager,
                     BlockTree,
-                    ReadOnlyTrieStore,
                     SpecProvider,
                     BlockValidator,
                     NoBlockRewards.Instance,
@@ -122,19 +122,18 @@ namespace Nethermind.AccountAbstraction.Test
 
                 UserOperationTxSource = new(UserOperationTxBuilder, UserOperationPool, UserOperationSimulator, SpecProvider, State, Signer, LogManager.GetClassLogger());
 
-                PostMergeBlockProducer CreatePostMergeBlockProducer(IBlockProductionTrigger blockProductionTrigger,
-                    ITxSource? txSource = null)
+                PostMergeBlockProducer CreatePostMergeBlockProducer(ITxSource? txSource = null)
                 {
                     var blockProducerEnv = blockProducerEnvFactory.Create(txSource);
                     return new PostMergeBlockProducerFactory(SpecProvider, SealEngine, Timestamper, blocksConfig,
                         LogManager, GasLimitCalculator).Create(
-                        blockProducerEnv, blockProductionTrigger);
+                        blockProducerEnv);
                 }
 
-                IBlockProducer blockProducer =
-                    CreatePostMergeBlockProducer(BlockProductionTrigger, UserOperationTxSource);
+                IBlockProducer blockProducer = CreatePostMergeBlockProducer(UserOperationTxSource);
 
-                blockProducer.BlockProduced += OnBlockProduced;
+                BlockProducerRunner = new StandardBlockProducerRunner(BlockProductionTrigger, BlockTree, blockProducer);
+                BlockProducerRunner.BlockProduced += OnBlockProduced;
 
                 return blockProducer;
             }
@@ -190,12 +189,13 @@ namespace Nethermind.AccountAbstraction.Test
                     new BlockProcessor.BlockValidationTransactionsExecutor(TxProcessor, State),
                     State,
                     ReceiptStorage,
-                    NullWitnessCollector.Instance,
+                    new BlockhashStore(BlockTree, SpecProvider, State),
                     LogManager);
 
+                AbiParameterConverter.RegisterFactory(new AbiTypeFactory(new AbiTuple<UserOperationAbi>()));
+
                 var parser = new AbiDefinitionParser();
-                parser.RegisterAbiTypeFactory(new AbiTuple<UserOperationAbi>());
-                var json = parser.LoadContract(typeof(EntryPoint));
+                var json = AbiDefinitionParser.LoadContract(typeof(EntryPoint));
                 EntryPointContractAbi = parser.Parse(json);
 
                 foreach (Address entryPoint in entryPointContractAddresses)
@@ -212,7 +212,7 @@ namespace Nethermind.AccountAbstraction.Test
                     UserOperationSimulator[entryPoint] = new(
                         UserOperationTxBuilder[entryPoint],
                         ReadOnlyState,
-                        new ReadOnlyTxProcessingEnvFactory(DbProvider, ReadOnlyTrieStore, BlockTree, SpecProvider, LogManager),
+                        new ReadOnlyTxProcessingEnvFactory(WorldStateManager, BlockTree, SpecProvider, LogManager),
                         EntryPointContractAbi,
                         entryPoint!,
                         WhitelistedPayamsters,
@@ -287,7 +287,7 @@ namespace Nethermind.AccountAbstraction.Test
 
             public void SendUserOperation(Address entryPoint, UserOperation userOperation)
             {
-                ResultWrapper<Keccak> resultOfUserOperation = UserOperationPool[entryPoint].AddUserOperation(userOperation);
+                ResultWrapper<Hash256> resultOfUserOperation = UserOperationPool[entryPoint].AddUserOperation(userOperation);
                 resultOfUserOperation.Result.Should().Be(Result.Success, resultOfUserOperation.Result.Error);
                 resultOfUserOperation.Data.Should().Be(userOperation.RequestId!);
             }

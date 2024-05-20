@@ -12,6 +12,7 @@ using Nethermind.Consensus.Comparers;
 using Nethermind.Consensus.Processing;
 using Nethermind.Consensus.Producers;
 using Nethermind.Consensus.Rewards;
+using Nethermind.Consensus.Scheduler;
 using Nethermind.Consensus.Validators;
 using Nethermind.Core;
 using Nethermind.Evm.TransactionProcessing;
@@ -20,6 +21,7 @@ using Nethermind.Facade.Eth;
 using Nethermind.JsonRpc;
 using Nethermind.JsonRpc.Modules.Eth.GasPrice;
 using Nethermind.State;
+using Nethermind.Trie;
 using Nethermind.Trie.Pruning;
 using Nethermind.TxPool;
 
@@ -36,6 +38,7 @@ namespace Nethermind.Api
         IBlockProcessingQueue? BlockProcessingQueue { get; set; }
         IBlockProcessor? MainBlockProcessor { get; set; }
         IBlockProducer? BlockProducer { get; set; }
+        IBlockProducerRunner? BlockProducerRunner { get; set; }
         IBlockValidator? BlockValidator { get; set; }
         IEnode? Enode { get; set; }
         IFilterStore? FilterStore { get; set; }
@@ -43,7 +46,6 @@ namespace Nethermind.Api
         IUnclesValidator? UnclesValidator { get; set; }
         IHeaderValidator? HeaderValidator { get; set; }
         IManualBlockProductionTrigger ManualBlockProductionTrigger { get; }
-        IReadOnlyTrieStore? ReadOnlyTrieStore { get; set; }
         IRewardCalculatorSource? RewardCalculatorSource { get; set; }
         /// <summary>
         /// PoS switcher for The Merge
@@ -59,9 +61,9 @@ namespace Nethermind.Api
         /// DO NOT USE OUTSIDE OF PROCESSING BLOCK CONTEXT!
         /// </remarks>
         IWorldState? WorldState { get; set; }
-        IKeyValueStoreWithBatching? MainStateDbWithCache { get; set; }
         IReadOnlyStateProvider? ChainHeadStateProvider { get; set; }
         IStateReader? StateReader { get; set; }
+        IWorldStateManager? WorldStateManager { get; set; }
         ITransactionProcessor? TransactionProcessor { get; set; }
         ITrieStore? TrieStore { get; set; }
         ITxSender? TxSender { get; set; }
@@ -69,12 +71,10 @@ namespace Nethermind.Api
         ITxPool? TxPool { get; set; }
         ITxPoolInfoProvider? TxPoolInfoProvider { get; set; }
         CompositeTxGossipPolicy TxGossipPolicy { get; }
-        IWitnessCollector? WitnessCollector { get; set; }
-        IWitnessRepository? WitnessRepository { get; set; }
         IHealthHintService? HealthHintService { get; set; }
         IRpcCapabilitiesProvider? RpcCapabilitiesProvider { get; set; }
         ITransactionComparerProvider? TransactionComparerProvider { get; set; }
-        TxValidator? TxValidator { get; set; }
+        ITxValidator? TxValidator { get; set; }
 
         /// <summary>
         /// Manager of block finalization
@@ -95,5 +95,7 @@ namespace Nethermind.Api
         CompositePruningTrigger PruningTrigger { get; }
 
         IBlockProductionPolicy? BlockProductionPolicy { get; set; }
+        INodeStorageFactory NodeStorageFactory { get; set; }
+        BackgroundTaskScheduler BackgroundTaskScheduler { get; set; }
     }
 }

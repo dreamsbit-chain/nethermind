@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 
 using System;
-using System.Collections.Concurrent;
+using NonBlocking;
 using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.CompilerServices;
@@ -40,7 +40,7 @@ namespace Nethermind.Synchronization.Peers
 
         public long HeadNumber => SyncPeer.HeadNumber;
 
-        public Keccak HeadHash => SyncPeer.HeadHash;
+        public Hash256 HeadHash => SyncPeer.HeadHash;
 
         [MethodImpl(MethodImplOptions.Synchronized)]
         public bool CanBeAllocated(AllocationContexts contexts)
@@ -144,7 +144,7 @@ namespace Nethermind.Synchronization.Peers
             return sleeps;
         }
 
-        private void ResolveWeaknessChecks(ref int weakness, AllocationContexts singleContext, ref AllocationContexts sleeps)
+        private static void ResolveWeaknessChecks(ref int weakness, AllocationContexts singleContext, ref AllocationContexts sleeps)
         {
             int level = Interlocked.Increment(ref weakness);
             if (level >= SleepThreshold)
@@ -155,9 +155,9 @@ namespace Nethermind.Synchronization.Peers
 
         private static string BuildContextString(AllocationContexts contexts)
         {
-            return $"{((contexts & AllocationContexts.Headers) == AllocationContexts.Headers ? "H" : " ")}{((contexts & AllocationContexts.Bodies) == AllocationContexts.Bodies ? "B" : " ")}{((contexts & AllocationContexts.Receipts) == AllocationContexts.Receipts ? "R" : " ")}{((contexts & AllocationContexts.State) == AllocationContexts.State ? "N" : " ")}{((contexts & AllocationContexts.Snap) == AllocationContexts.Snap ? "S" : " ")}{((contexts & AllocationContexts.Witness) == AllocationContexts.Witness ? "W" : " ")}";
+            return $"{((contexts & AllocationContexts.Headers) == AllocationContexts.Headers ? "H" : " ")}{((contexts & AllocationContexts.Bodies) == AllocationContexts.Bodies ? "B" : " ")}{((contexts & AllocationContexts.Receipts) == AllocationContexts.Receipts ? "R" : " ")}{((contexts & AllocationContexts.State) == AllocationContexts.State ? "N" : " ")}{((contexts & AllocationContexts.Snap) == AllocationContexts.Snap ? "S" : " ")}";
         }
 
-        public override string ToString() => $"[{BuildContextString(AllocatedContexts)}][{BuildContextString(SleepingContexts)}]{SyncPeer}";
+        public override string ToString() => $"[{BuildContextString(AllocatedContexts)} ][{BuildContextString(SleepingContexts)} ]{SyncPeer}";
     }
 }

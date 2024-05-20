@@ -4,13 +4,13 @@
 using System;
 using DotNetty.Buffers;
 using Nethermind.Core;
+using Nethermind.Core.Collections;
 using Nethermind.Core.Extensions;
 using Nethermind.Core.Specs;
 using Nethermind.Serialization.Rlp;
 
 namespace Nethermind.Network.P2P.Subprotocols.Eth.V63.Messages
 {
-    // 3% (2GB) allocation of Goerli 3m fast sync that can be improved by implementing ZeroMessageSerializer here
     public class ReceiptsMessageSerializer : IZeroInnerMessageSerializer<ReceiptsMessage>
     {
         private readonly ISpecProvider _specProvider;
@@ -25,7 +25,7 @@ namespace Nethermind.Network.P2P.Subprotocols.Eth.V63.Messages
         {
             int totalLength = GetLength(message, out int contentLength);
 
-            byteBuffer.EnsureWritable(totalLength, true);
+            byteBuffer.EnsureWritable(totalLength);
             NettyRlpStream stream = new(byteBuffer);
             stream.StartSequence(contentLength);
 
@@ -74,7 +74,7 @@ namespace Nethermind.Network.P2P.Subprotocols.Eth.V63.Messages
 
         public ReceiptsMessage Deserialize(RlpStream rlpStream)
         {
-            TxReceipt[][] data = rlpStream.DecodeArray(itemContext =>
+            ArrayPoolList<TxReceipt[]> data = rlpStream.DecodeArrayPoolList(itemContext =>
                 itemContext.DecodeArray(nestedContext => _decoder.Decode(nestedContext)) ?? Array.Empty<TxReceipt>(), true);
             ReceiptsMessage message = new(data);
 
@@ -85,7 +85,7 @@ namespace Nethermind.Network.P2P.Subprotocols.Eth.V63.Messages
         {
             contentLength = 0;
 
-            for (int i = 0; i < message.TxReceipts.Length; i++)
+            for (int i = 0; i < message.TxReceipts.Count; i++)
             {
                 TxReceipt?[]? txReceipts = message.TxReceipts[i];
                 if (txReceipts is null)

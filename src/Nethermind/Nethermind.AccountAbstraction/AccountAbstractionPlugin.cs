@@ -32,6 +32,7 @@ using Nethermind.JsonRpc.Modules.Subscribe;
 using Nethermind.Network.Config;
 using Nethermind.Consensus.Producers;
 using Nethermind.Config;
+using Nethermind.Consensus.Transactions;
 using Nethermind.Network.Contract.P2P;
 
 namespace Nethermind.AccountAbstraction;
@@ -40,7 +41,7 @@ public class AccountAbstractionPlugin : IConsensusWrapperPlugin
 {
     private IAccountAbstractionConfig _accountAbstractionConfig = null!;
     private AbiDefinition _entryPointContractAbi = null!;
-    private ILogger _logger = null!;
+    private ILogger _logger;
 
     private INethermindApi _nethermindApi = null!;
     private readonly IList<Address> _entryPointContractAddresses = new List<Address>();
@@ -121,8 +122,7 @@ public class AccountAbstractionPlugin : IConsensusWrapperPlugin
         var (getFromApi, _) = _nethermindApi!.ForProducer;
 
         ReadOnlyTxProcessingEnvFactory readOnlyTxProcessingEnvFactory = new(
-            getFromApi.DbProvider,
-            getFromApi.ReadOnlyTrieStore,
+            getFromApi.WorldStateManager!,
             getFromApi.BlockTree,
             getFromApi.SpecProvider,
             getFromApi.LogManager);
@@ -348,7 +348,7 @@ public class AccountAbstractionPlugin : IConsensusWrapperPlugin
         return ValueTask.CompletedTask;
     }
 
-    public Task<IBlockProducer> InitBlockProducer(IConsensusPlugin consensusPlugin)
+    public IBlockProducer InitBlockProducer(IBlockProducerFactory consensusPlugin, ITxSource? additionalTxSource)
     {
         if (!Enabled) throw new InvalidOperationException("Account Abstraction plugin is disabled");
 
@@ -378,20 +378,19 @@ public class AccountAbstractionPlugin : IConsensusWrapperPlugin
                         $"Account Abstraction Plugin: Miner ({_nethermindApi.EngineSigner!.Address}) Ether balance adequate - {minerBalance / 1.Ether()} Ether");
             }
 
-        IManualBlockProductionTrigger trigger = new BuildBlocksWhenRequested();
-
-        return consensusPlugin.InitBlockProducer(trigger, UserOperationTxSource);
+        return consensusPlugin.InitBlockProducer(UserOperationTxSource);
     }
 
     public bool MevPluginEnabled => _nethermindApi.Config<IMevConfig>().Enabled;
     public bool BundleMiningEnabled => _accountAbstractionConfig.Enabled && (_nethermindApi.Config<IInitConfig>().IsMining || _nethermindApi.Config<IMiningConfig>().Enabled);
     public bool Enabled => BundleMiningEnabled && !MevPluginEnabled; // IConsensusWrapperPlugin.Enabled
 
-    private AbiDefinition LoadEntryPointContract()
+    private static AbiDefinition LoadEntryPointContract()
     {
+        AbiParameterConverter.RegisterFactory(new AbiTypeFactory(new AbiTuple<UserOperationAbi>()));
+
         AbiDefinitionParser parser = new();
-        parser.RegisterAbiTypeFactory(new AbiTuple<UserOperationAbi>());
-        string json = parser.LoadContract(typeof(EntryPoint));
+        string json = AbiDefinitionParser.LoadContract(typeof(EntryPoint));
         return parser.Parse(json);
     }
 }

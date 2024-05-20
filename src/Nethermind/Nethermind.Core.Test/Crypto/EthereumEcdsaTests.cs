@@ -40,6 +40,18 @@ namespace Nethermind.Core.Test.Crypto
 
         [TestCase(true)]
         [TestCase(false)]
+        public void Signature_test_sepolia_1559(bool eip155)
+        {
+            EthereumEcdsa ecdsa = new(BlockchainIds.Sepolia, LimboLogs.Instance);
+            PrivateKey key = Build.A.PrivateKey.TestObject;
+            Transaction tx = Build.A.Transaction.WithType(TxType.EIP1559).TestObject;
+            ecdsa.Sign(key, tx, eip155);
+            Address? address = ecdsa.RecoverAddress(tx);
+            Assert.That(address, Is.EqualTo(key.Address));
+        }
+
+        [TestCase(true)]
+        [TestCase(false)]
         public void Signature_test_olympic(bool isEip155Enabled)
         {
             EthereumEcdsa ecdsa = new(BlockchainIds.Mainnet, LimboLogs.Instance);
@@ -51,26 +63,14 @@ namespace Nethermind.Core.Test.Crypto
         }
 
         [Test]
-        public void Sign_goerli()
+        public void Sign_generic_network()
         {
-            EthereumEcdsa ecdsa = new(BlockchainIds.Goerli, LimboLogs.Instance);
+            // maybe make random id so it captures the idea that signature should work irrespective of chain
+            EthereumEcdsa ecdsa = new(BlockchainIds.GenericNonRealNetwork, LimboLogs.Instance);
             PrivateKey key = Build.A.PrivateKey.TestObject;
             Transaction tx = Build.A.Transaction.TestObject;
             ecdsa.Sign(key, tx, true);
             Address? address = ecdsa.RecoverAddress(tx);
-            Assert.That(address, Is.EqualTo(key.Address));
-        }
-
-        [Test]
-        public void Recover_kovan([Values(false, true)] bool eip155)
-        {
-            EthereumEcdsa singEcdsa = new(BlockchainIds.Mainnet, LimboLogs.Instance);
-            PrivateKey key = Build.A.PrivateKey.TestObject;
-            Transaction tx = Build.A.Transaction.TestObject;
-            singEcdsa.Sign(key, tx, eip155);
-
-            EthereumEcdsa recoverEcdsa = new(BlockchainIds.Kovan, LimboLogs.Instance);
-            Address? address = recoverEcdsa.RecoverAddress(tx, true);
             Assert.That(address, Is.EqualTo(key.Address));
         }
     }

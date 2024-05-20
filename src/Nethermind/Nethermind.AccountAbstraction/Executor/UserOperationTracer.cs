@@ -70,21 +70,22 @@ namespace Nethermind.AccountAbstraction.Executor
         public override bool IsTracingAccess => true;
 
         public override void MarkAsSuccess(Address recipient, long gasSpent, byte[] output, LogEntry[] logs,
-            Keccak? stateRoot = null)
+            Hash256? stateRoot = null)
         {
             Output = output;
         }
 
         public override void MarkAsFailed(Address recipient, long gasSpent, byte[] output, string error,
-            Keccak? stateRoot = null)
+            Hash256? stateRoot = null)
         {
             Success = false;
             Error = error;
             Output = output;
         }
 
-        public override void StartOperation(int depth, long gas, Instruction opcode, int pc, bool isPostMerge = false)
+        public override void StartOperation(int pc, Instruction opcode, long gas, in ExecutionEnvironment env)
         {
+            int depth = env.GetGethTraceDepth();
             if (_nextOpcodeMustBeCall)
             {
                 _nextOpcodeMustBeCall = false;

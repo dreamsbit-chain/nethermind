@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 
 using System;
+using System.Collections.Generic;
 using System.Threading.Tasks;
 using DotNetty.Transport.Channels;
 using FluentAssertions;
@@ -13,7 +14,9 @@ using Nethermind.Network.P2P.Messages;
 using Nethermind.Network.P2P.ProtocolHandlers;
 using Nethermind.Network.Rlpx;
 using Nethermind.Stats.Model;
+using NonBlocking;
 using NSubstitute;
+using NSubstitute.ReceivedExtensions;
 using NUnit.Framework;
 
 namespace Nethermind.Network.Test.P2P
@@ -512,6 +515,45 @@ namespace Nethermind.Network.Test.P2P
             p2p.DidNotReceive().HandleMessage(Arg.Is<Packet>(p => p.Protocol == "p2p" && p.PacketType == 3));
         }
 
+        [Test]
+        public void Delay_disconnect_until_after_initialize()
+        {
+            Session session = new(30312, new Node(TestItem.PublicKeyA, "127.0.0.1", 8545), _channel, NullDisconnectsAnalyzer.Instance, LimboLogs.Instance);
+            session.Handshake(TestItem.PublicKeyA);
+            session.InitiateDisconnect(DisconnectReason.TooManyPeers);
+
+            IProtocolHandler p2p = BuildHandler("p2p", 10);
+            session.AddProtocolHandler(p2p);
+
+            session.Init(5, _channelHandlerContext, _packetSender);
+
+            p2p.Received().DisconnectProtocol(Arg.Any<DisconnectReason>(), Arg.Any<string?>());
+        }
+
+        [Test]
+        public void Protocol_handler_can_send_message_on_disconnect()
+        {
+            Session session = new(30312, new Node(TestItem.PublicKeyA, "127.0.0.1", 8545), _channel, NullDisconnectsAnalyzer.Instance, LimboLogs.Instance);
+            session.Handshake(TestItem.PublicKeyA);
+            session.InitiateDisconnect(DisconnectReason.TooManyPeers);
+
+            IProtocolHandler p2p = BuildHandler("p2p", 10);
+            session.AddProtocolHandler(p2p);
+
+            p2p.When(it => it.DisconnectProtocol(Arg.Any<DisconnectReason>(), Arg.Any<string>()))
+                .Do((_) =>
+                {
+                    session.DeliverMessage(PingMessage.Instance);
+                });
+
+            session.Init(5, _channelHandlerContext, _packetSender);
+            session.InitiateDisconnect(DisconnectReason.Other);
+
+            _packetSender
+                .Received()
+                .Enqueue(PingMessage.Instance);
+        }
+
         [Test, Retry(3)]
         [Parallelizable(ParallelScope.None)] // It touches global metrics
         public void Can_receive_messages()
@@ -557,11 +599,11 @@ namespace Nethermind.Network.Test.P2P
             IProtocolHandler p2p = BuildHandler("p2p", 10);
             session.AddProtocolHandler(p2p);
 
-            long beforeLocal = Network.Metrics.LocalOtherDisconnects;
-            long beforeRemote = Network.Metrics.OtherDisconnects;
+            long beforeLocal = Network.Metrics.LocalDisconnectsTotal.GetValueOrDefault(DisconnectReason.Other);
+            long beforeRemote = Network.Metrics.RemoteDisconnectsTotal.GetValueOrDefault(DisconnectReason.Other);
             session.MarkDisconnected(DisconnectReason.Other, DisconnectType.Local, string.Empty);
-            long afterLocal = Network.Metrics.LocalOtherDisconnects;
-            long afterRemote = Network.Metrics.OtherDisconnects;
+            long afterLocal = Network.Metrics.LocalDisconnectsTotal.GetValueOrDefault(DisconnectReason.Other);
+            long afterRemote = Network.Metrics.RemoteDisconnectsTotal.GetValueOrDefault(DisconnectReason.Other);
             Assert.That(afterLocal, Is.EqualTo(beforeLocal + 1));
             Assert.That(afterRemote, Is.EqualTo(beforeRemote));
 
@@ -571,11 +613,11 @@ namespace Nethermind.Network.Test.P2P
             p2p = BuildHandler("p2p", 10);
             session.AddProtocolHandler(p2p);
 
-            beforeLocal = Network.Metrics.LocalOtherDisconnects;
-            beforeRemote = Network.Metrics.OtherDisconnects;
+            beforeLocal = Network.Metrics.LocalDisconnectsTotal.GetValueOrDefault(DisconnectReason.Other);
+            beforeRemote = Network.Metrics.RemoteDisconnectsTotal.GetValueOrDefault(DisconnectReason.Other);
             session.MarkDisconnected(DisconnectReason.Other, DisconnectType.Remote, string.Empty);
-            afterLocal = Network.Metrics.LocalOtherDisconnects;
-            afterRemote = Network.Metrics.OtherDisconnects;
+            afterLocal = Network.Metrics.LocalDisconnectsTotal.GetValueOrDefault(DisconnectReason.Other);
+            afterRemote = Network.Metrics.RemoteDisconnectsTotal.GetValueOrDefault(DisconnectReason.Other);
             Assert.That(afterLocal, Is.EqualTo(beforeLocal));
             Assert.That(afterRemote, Is.EqualTo(beforeRemote + 1));
         }

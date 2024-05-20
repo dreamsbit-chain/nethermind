@@ -58,17 +58,24 @@ namespace Nethermind.Network.Test.Rlpx
             ResourceLeakDetector.Level = ResourceLeakDetector.DetectionLevel.Paranoid;
         }
 
+        [TearDown]
+        public void TearDown()
+        {
+            _macProcessorA?.Dispose();
+            _macProcessorB?.Dispose();
+        }
+
         [TestCase(StackType.Zero, StackType.Zero, true)]
         [TestCase(StackType.Zero, StackType.Zero, false)]
         public void Get_block_bodies_there_and_back(StackType inbound, StackType outbound, bool framingEnabled)
         {
-            var hashes = new Keccak[256];
+            var hashes = new Hash256[256];
             for (int i = 0; i < hashes.Length; i++)
             {
                 hashes[i] = Keccak.Compute(i.ToString());
             }
 
-            GetBlockBodiesMessage message = new(hashes);
+            using GetBlockBodiesMessage message = new(hashes);
 
             GetBlockBodiesMessageSerializer serializer = new();
             byte[] data = serializer.Serialize(message);
@@ -84,7 +91,7 @@ namespace Nethermind.Network.Test.Rlpx
             Transaction a = Build.A.Transaction.TestObject;
             Transaction b = Build.A.Transaction.TestObject;
             Block block = Build.A.Block.WithTransactions(a, b).TestObject;
-            NewBlockMessage newBlockMessage = new();
+            using NewBlockMessage newBlockMessage = new();
             newBlockMessage.Block = block;
 
             NewBlockMessageSerializer newBlockMessageSerializer = new();
@@ -99,7 +106,7 @@ namespace Nethermind.Network.Test.Rlpx
         {
             Transaction[] txs = Build.A.Transaction.SignedAndResolved().TestObjectNTimes(10);
             Block block = Build.A.Block.WithTransactions(txs).TestObject;
-            NewBlockMessage newBlockMessage = new();
+            using NewBlockMessage newBlockMessage = new();
             newBlockMessage.Block = block;
 
             NewBlockMessageSerializer newBlockMessageSerializer = new();
@@ -108,7 +115,7 @@ namespace Nethermind.Network.Test.Rlpx
 
             Packet decoded = Run(packet, inbound, outbound, framingEnabled);
 
-            NewBlockMessage decodedMessage = newBlockMessageSerializer.Deserialize(decoded.Data);
+            using NewBlockMessage decodedMessage = newBlockMessageSerializer.Deserialize(decoded.Data);
             Assert.That(decodedMessage.Block.Transactions.Length, Is.EqualTo(newBlockMessage.Block.Transactions.Length));
         }
 
@@ -116,13 +123,13 @@ namespace Nethermind.Network.Test.Rlpx
         [TestCase(StackType.Zero, StackType.Zero, false)]
         public void Receipts_message(StackType inbound, StackType outbound, bool framingEnabled)
         {
-            Keccak[] hashes = new Keccak[256];
+            Hash256[] hashes = new Hash256[256];
             for (int i = 0; i < hashes.Length; i++)
             {
                 hashes[i] = Keccak.Compute(i.ToString());
             }
 
-            GetReceiptsMessage message = new(hashes);
+            GetReceiptsMessage message = new(hashes.ToPooledList());
 
             GetReceiptsMessageSerializer serializer = new();
             byte[] data = serializer.Serialize(message);
@@ -137,7 +144,7 @@ namespace Nethermind.Network.Test.Rlpx
         [TestCase(StackType.Zero, StackType.Zero, false)]
         public void Status_message(StackType inbound, StackType outbound, bool framingEnabled)
         {
-            StatusMessage message = new();
+            using StatusMessage message = new();
             message.BestHash = Keccak.Zero;
             message.GenesisHash = Keccak.Zero;
             message.ProtocolVersion = 63;
@@ -149,7 +156,7 @@ namespace Nethermind.Network.Test.Rlpx
             Packet packet = new("eth", 7, data);
             Packet decoded = Run(packet, inbound, outbound, framingEnabled);
 
-            StatusMessage decodedMessage = serializer.Deserialize(decoded.Data);
+            using StatusMessage decodedMessage = serializer.Deserialize(decoded.Data);
             Assert.That(decodedMessage.TotalDifficulty, Is.EqualTo(message.TotalDifficulty));
         }
 
@@ -172,7 +179,7 @@ namespace Nethermind.Network.Test.Rlpx
                     embeddedChannel.WriteOutbound(packet);
                 }
 
-                while (embeddedChannel.OutboundMessages.Any())
+                while (embeddedChannel.OutboundMessages.Count != 0)
                 {
                     IByteBuffer encodedPacket = embeddedChannel.ReadOutbound<IByteBuffer>();
                     embeddedChannel.WriteInbound(encodedPacket);

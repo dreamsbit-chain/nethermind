@@ -20,6 +20,7 @@ using Nethermind.Merge.Plugin;
 using Nethermind.Merge.Plugin.Synchronization;
 using Nethermind.Merge.Plugin.Test;
 using Nethermind.Specs;
+using Nethermind.Specs.ChainSpecStyle;
 using Nethermind.Stats;
 using Nethermind.Stats.Model;
 using Nethermind.Synchronization.Blocks;
@@ -331,13 +332,12 @@ public partial class BlockDownloaderTests
             BlockTreeScenario = blockTrees,
         };
 
-        ctx.Feed = new FastSyncFeed(ctx.SyncModeSelector,
-            new SyncConfig
-            {
-                NonValidatorNode = true,
-                DownloadBodiesInFastSync = false,
-                DownloadReceiptsInFastSync = false
-            }, LimboLogs.Instance)!;
+        ctx.Feed = new FastSyncFeed(new SyncConfig
+        {
+            NonValidatorNode = true,
+            DownloadBodiesInFastSync = false,
+            DownloadReceiptsInFastSync = false
+        })!;
 
         ctx.BeaconPivot.EnsurePivot(blockTrees.SyncedTree.FindHeader(64, BlockTreeLookupOptions.None));
 
@@ -395,11 +395,11 @@ public partial class BlockDownloaderTests
         syncPeer.GetBlockHeaders(Arg.Any<long>(), Arg.Any<int>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
             .Returns(ci => syncPeerInternal.GetBlockHeaders(ci.ArgAt<long>(0), ci.ArgAt<int>(1), ci.ArgAt<int>(2), ci.ArgAt<CancellationToken>(3)));
 
-        syncPeer.GetBlockBodies(Arg.Any<IReadOnlyList<Keccak>>(), Arg.Any<CancellationToken>())
-            .Returns(ci => syncPeerInternal.GetBlockBodies(ci.ArgAt<IReadOnlyList<Keccak>>(0), ci.ArgAt<CancellationToken>(1)));
+        syncPeer.GetBlockBodies(Arg.Any<IReadOnlyList<Hash256>>(), Arg.Any<CancellationToken>())
+            .Returns(ci => syncPeerInternal.GetBlockBodies(ci.ArgAt<IReadOnlyList<Hash256>>(0), ci.ArgAt<CancellationToken>(1)));
 
-        syncPeer.GetReceipts(Arg.Any<IReadOnlyList<Keccak>>(), Arg.Any<CancellationToken>())
-            .Returns(async ci => await syncPeerInternal.GetReceipts(ci.ArgAt<IReadOnlyList<Keccak>>(0), ci.ArgAt<CancellationToken>(1)));
+        syncPeer.GetReceipts(Arg.Any<IReadOnlyList<Hash256>>(), Arg.Any<CancellationToken>())
+            .Returns(async ci => await syncPeerInternal.GetReceipts(ci.ArgAt<IReadOnlyList<Hash256>>(0), ci.ArgAt<CancellationToken>(1)));
 
 
         syncPeer.TotalDifficulty.Returns(_ => syncPeerInternal.TotalDifficulty);
@@ -418,6 +418,33 @@ public partial class BlockDownloaderTests
         await action.Should().NotThrowAsync();
     }
 
+    [TestCase(2)]
+    [TestCase(6)]
+    [TestCase(34)]
+    [TestCase(129)]
+    [TestCase(1024)]
+    public void BlockDownloader_does_not_stop_processing_when_main_chain_is_unknown(long pivot)
+    {
+        DownloaderOptions downloaderOptions = DownloaderOptions.Process;
+        BlockTreeTests.BlockTreeTestScenario.ScenarioBuilder blockTrees = BlockTreeTests.BlockTreeTestScenario
+             .GoesLikeThis()
+             .WithBlockTrees(1, (int)(pivot + 1), false, 0)
+             .InsertBeaconPivot(pivot)
+             .InsertBeaconHeaders(1, pivot)
+             .InsertBeaconBlocks(pivot, pivot, BlockTreeTests.BlockTreeTestScenario.ScenarioBuilder.TotalDifficultyMode.Null);
+
+        PostMergeContext ctx = new()
+        {
+            BlockTreeScenario = blockTrees,
+            MergeConfig = new MergeConfig { TerminalTotalDifficulty = "0" }
+        };
+        ctx.BeaconPivot.EnsurePivot(blockTrees.SyncedTree.FindHeader(pivot, BlockTreeLookupOptions.None));
+        ctx.BeaconPivot.ProcessDestination = blockTrees.SyncedTree.FindHeader(pivot, BlockTreeLookupOptions.None);
+
+        SyncPeerMock syncPeer = new(blockTrees.SyncedTree, true, Response.AllCorrect | Response.WithTransactions, 0);
+        Assert.DoesNotThrowAsync(() => ctx.BlockDownloader.DownloadBlocks(new(syncPeer), new BlocksRequest(downloaderOptions), CancellationToken.None));
+    }
+
     class PostMergeContext : Context
     {
         protected override ISpecProvider SpecProvider => _specProvider ??= new MainnetSpecProvider(); // PoSSwitcher changes TTD, so can't use MainnetSpecProvider.Instance
@@ -434,8 +461,8 @@ public partial class BlockDownloaderTests
 
         public override IBlockTree BlockTree => _blockTreeScenario?.NotSyncedTree ?? base.BlockTree;
 
-        private MemDb? _metadataDb;
-        private MemDb MetadataDb => (_metadataDb ?? _blockTreeScenario?.NotSyncedTreeBuilder.MetadataDb) ?? (_metadataDb ??= new MemDb());
+        private IDb? _metadataDb;
+        private IDb MetadataDb => (_metadataDb ?? _blockTreeScenario?.NotSyncedTreeBuilder.MetadataDb) ?? (_metadataDb ??= new MemDb());
 
         private MergeConfig? _mergeConfig;
 
@@ -447,7 +474,6 @@ public partial class BlockDownloaderTests
         }
 
         private BeaconPivot? _beaconPivot;
-        public BeaconPivot BeaconPivot => _beaconPivot ??= new(new SyncConfig(), MetadataDb, BlockTree, LimboLogs.Instance);
 
         private PoSSwitcher? _posSwitcher;
 
@@ -457,7 +483,9 @@ public partial class BlockDownloaderTests
             MetadataDb,
             BlockTree,
             SpecProvider,
+            new ChainSpec(),
             LimboLogs.Instance);
+        public BeaconPivot BeaconPivot => _beaconPivot ??= new(new SyncConfig(), MetadataDb, BlockTree, _posSwitcher!, LimboLogs.Instance);
 
         protected override IBetterPeerStrategy BetterPeerStrategy => _betterPeerStrategy ??=
             new MergeBetterPeerStrategy(new TotalDifficultyBetterPeerStrategy(LimboLogs.Instance), PosSwitcher, BeaconPivot, LimboLogs.Instance);

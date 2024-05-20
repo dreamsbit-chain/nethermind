@@ -27,7 +27,7 @@ public interface IWorldState : IJournal<Snapshot>, IReadOnlyStateProvider
     /// </summary>
     /// <param name="storageCell">Storage location</param>
     /// <returns>Value at cell</returns>
-    byte[] Get(in StorageCell storageCell);
+    ReadOnlySpan<byte> Get(in StorageCell storageCell);
 
     /// <summary>
     /// Set the provided value to persistent storage at the specified storage cell
@@ -41,7 +41,7 @@ public interface IWorldState : IJournal<Snapshot>, IReadOnlyStateProvider
     /// </summary>
     /// <param name="storageCell">Storage location</param>
     /// <returns>Value at cell</returns>
-    byte[] GetTransientState(in StorageCell storageCell);
+    ReadOnlySpan<byte> GetTransientState(in StorageCell storageCell);
 
     /// <summary>
     /// Set the provided value to transient storage at the specified storage cell
@@ -76,14 +76,14 @@ public interface IWorldState : IJournal<Snapshot>, IReadOnlyStateProvider
 
     void RecalculateStateRoot();
 
-    new Keccak StateRoot { get; set; }
+    new Hash256 StateRoot { get; set; }
 
     void DeleteAccount(Address address);
 
     void CreateAccount(Address address, in UInt256 balance, in UInt256 nonce = default);
     void CreateAccountIfNotExists(Address address, in UInt256 balance, in UInt256 nonce = default);
 
-    void InsertCode(Address address, ReadOnlyMemory<byte> code, IReleaseSpec spec, bool isGenesis = false);
+    void InsertCode(Address address, Hash256 codeHash, ReadOnlyMemory<byte> code, IReleaseSpec spec, bool isGenesis = false);
 
     void AddToBalance(Address address, in UInt256 balanceChange, IReleaseSpec spec);
 
@@ -91,7 +91,7 @@ public interface IWorldState : IJournal<Snapshot>, IReadOnlyStateProvider
 
     void SubtractFromBalance(Address address, in UInt256 balanceChange, IReleaseSpec spec);
 
-    void UpdateStorageRoot(Address address, Keccak storageRoot);
+    void UpdateStorageRoot(Address address, Hash256 storageRoot);
 
     void IncrementNonce(Address address);
 
@@ -99,15 +99,9 @@ public interface IWorldState : IJournal<Snapshot>, IReadOnlyStateProvider
 
     /* snapshots */
 
-    void Commit(IReleaseSpec releaseSpec, bool isGenesis = false);
+    void Commit(IReleaseSpec releaseSpec, bool isGenesis = false, bool commitStorageRoots = true);
 
-    void Commit(IReleaseSpec releaseSpec, IWorldStateTracer? traver, bool isGenesis = false);
+    void Commit(IReleaseSpec releaseSpec, IWorldStateTracer? tracer, bool isGenesis = false, bool commitStorageRoots = true);
 
     void CommitTree(long blockNumber);
-
-    /// <summary>
-    /// For witness
-    /// </summary>
-    /// <param name="codeHash"></param>
-    void TouchCode(Keccak codeHash);
 }
