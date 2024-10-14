@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 
 using System;
+using System.Runtime.CompilerServices;
 using Nethermind.Core;
 using Nethermind.Core.Crypto;
 using Nethermind.Core.Extensions;
@@ -21,21 +22,15 @@ namespace Nethermind.Evm.Precompiles
 
         public static Address Address { get; } = Address.FromNumber(1);
 
-        public long DataGasCost(in ReadOnlyMemory<byte> inputData, IReleaseSpec releaseSpec)
-        {
-            return 0L;
-        }
+        public long DataGasCost(ReadOnlyMemory<byte> inputData, IReleaseSpec releaseSpec) => 0L;
 
-        public long BaseGasCost(IReleaseSpec releaseSpec)
-        {
-            return 3000L;
-        }
+        public long BaseGasCost(IReleaseSpec releaseSpec) => 3000L;
 
-        private readonly EthereumEcdsa _ecdsa = new(BlockchainIds.Mainnet, LimboLogs.Instance);
+        private readonly EthereumEcdsa _ecdsa = new(BlockchainIds.Mainnet);
 
         private readonly byte[] _zero31 = new byte[31];
 
-        public (ReadOnlyMemory<byte>, bool) Run(in ReadOnlyMemory<byte> inputData, IReleaseSpec releaseSpec)
+        public (ReadOnlyMemory<byte>, bool) Run(ReadOnlyMemory<byte> inputData, IReleaseSpec releaseSpec)
         {
             Metrics.EcRecoverPrecompile++;
 

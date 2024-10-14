@@ -35,6 +35,7 @@ public class VirtualMachineTestsBase
     private IDb _stateDb;
 
     protected VirtualMachine Machine { get; private set; }
+    protected CodeInfoRepository CodeInfoRepository { get; private set; }
     protected IWorldState TestState { get; private set; }
     protected static Address Contract { get; } = new("0xd75a3a95360e44a3874e691fb48d77855f127069");
     protected static Address Sender { get; } = TestItem.AddressA;
@@ -65,10 +66,11 @@ public class VirtualMachineTestsBase
         _stateDb = new MemDb();
         ITrieStore trieStore = new TrieStore(_stateDb, logManager);
         TestState = new WorldState(trieStore, codeDb, logManager);
-        _ethereumEcdsa = new EthereumEcdsa(SpecProvider.ChainId, logManager);
+        _ethereumEcdsa = new EthereumEcdsa(SpecProvider.ChainId);
         IBlockhashProvider blockhashProvider = new TestBlockhashProvider(SpecProvider);
-        Machine = new VirtualMachine(blockhashProvider, SpecProvider, logManager);
-        _processor = new TransactionProcessor(SpecProvider, TestState, Machine, logManager);
+        CodeInfoRepository = new CodeInfoRepository();
+        Machine = new VirtualMachine(blockhashProvider, SpecProvider, CodeInfoRepository, logManager);
+        _processor = new TransactionProcessor(SpecProvider, TestState, Machine, CodeInfoRepository, logManager);
     }
 
     [TearDown]
@@ -86,6 +88,14 @@ public class VirtualMachineTestsBase
     {
         GethLikeTxMemoryTracer tracer = new(GethTraceOptions.Default);
         (Block block, Transaction transaction) = PrepareTx((blockNumber, Timestamp), gasLimit, code);
+        _processor.Execute(transaction, block.Header, tracer);
+        return tracer.BuildResult();
+    }
+
+    protected GethLikeTxTrace ExecuteAndTrace(long gasLimit, params byte[] code)
+    {
+        GethLikeTxMemoryTracer tracer = new(GethTraceOptions.Default);
+        (Block block, Transaction transaction) = PrepareTx(Activation, gasLimit, code);
         _processor.Execute(transaction, block.Header, tracer);
         return tracer.BuildResult();
     }
@@ -114,9 +124,21 @@ public class VirtualMachineTestsBase
         return tracer;
     }
 
+    protected TestAllTracerWithOutput Execute(ForkActivation activation, Transaction tx)
+    {
+        (Block block, _) = PrepareTx(activation, 100000, null);
+        TestAllTracerWithOutput tracer = CreateTracer();
+        _processor.Execute(tx, block.Header, tracer);
+        return tracer;
+    }
+
     protected TestAllTracerWithOutput Execute(params byte[] code)
     {
         return Execute(Activation, code);
+    }
+    protected TestAllTracerWithOutput Execute(Transaction tx)
+    {
+        return Execute(Activation, tx);
     }
 
     protected virtual TestAllTracerWithOutput CreateTracer() => new();
@@ -187,7 +209,8 @@ public class VirtualMachineTestsBase
         int value = 1,
         long blockGasLimit = DefaultBlockGasLimit,
         byte[][]? blobVersionedHashes = null,
-        ulong excessBlobGas = 0)
+        ulong excessBlobGas = 0,
+        Transaction transaction = null)
     {
         senderRecipientAndMiner ??= SenderRecipientAndMiner.Default;
 
@@ -217,7 +240,7 @@ public class VirtualMachineTestsBase
         TestState.CommitTree(0);
         GetLogManager().GetClassLogger().Debug("Committed initial tree");
 
-        Transaction transaction = Build.A.Transaction
+        transaction ??= Build.A.Transaction
             .WithGasLimit(gasLimit)
             .WithGasPrice(1)
             .WithValue(value)

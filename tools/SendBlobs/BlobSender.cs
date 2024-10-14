@@ -16,7 +16,7 @@ using Org.BouncyCastle.Utilities.Encoders;
 namespace SendBlobs;
 internal class BlobSender
 {
-    private static readonly TxDecoder txDecoder = new();
+    private static readonly TxDecoder txDecoder = TxDecoder.Instance;
 
     private INodeManager _nodeManager;
     private readonly ILogger _logger;
@@ -85,7 +85,7 @@ internal class BlobSender
             signers.Add(new(new Signer(chainId, privateKey, _logManager), nonce));
         }
 
-        TxDecoder txDecoder = new();
+        TxDecoder txDecoder = TxDecoder.Instance;
         Random random = new();
 
         int signerIndex = -1;
@@ -283,7 +283,7 @@ internal class BlobSender
         if (defaultMaxFeePerBlobGas is null)
         {
             ulong excessBlobsReserve = 2 * Eip4844Constants.TargetBlobGasPerBlock;
-            BlobGasCalculator.TryCalculateBlobGasPricePerUnit(
+            BlobGasCalculator.TryCalculateFeePerBlobGas(
                 (block.ExcessBlobGas ?? 0) +
                 excessBlobs * Eip4844Constants.MaxBlobGasPerBlock +
                 excessBlobsReserve,
@@ -362,7 +362,7 @@ internal class BlobSender
         while (true)
         {
             var blockResult = await nodeManager.Post<BlockModel<Hash256>>("eth_getBlockByNumber", lastBlockNumber.ToString() ?? "latest", false);
-            if (blockResult != null)
+            if (blockResult is not null)
             {
                 lastBlockNumber = blockResult.Number + 1;
 

@@ -20,11 +20,15 @@ using Nethermind.Merge.Plugin.InvalidChainTracker;
 using Nethermind.Blockchain;
 using Nethermind.Blockchain.Receipts;
 using Nethermind.Consensus.Rewards;
+using Nethermind.Consensus.Validators;
+using Nethermind.Core;
 using Nethermind.Merge.Plugin.Synchronization;
 using Nethermind.Synchronization.ParallelSync;
 using Nethermind.HealthChecks;
 using Nethermind.Serialization.Json;
 using Nethermind.Specs.ChainSpecStyle;
+using Nethermind.Serialization.Rlp;
+using Nethermind.Optimism.Rpc;
 
 namespace Nethermind.Optimism;
 
@@ -72,6 +76,15 @@ public class OptimismPlugin : IConsensusPlugin, ISynchronizationPlugin, IInitial
         ILogManager logManager, ChainSpec chainSpec) =>
         new OptimismNethermindApi(configProvider, jsonSerializer, logManager, chainSpec);
 
+    public void InitTxTypesAndRlpDecoders(INethermindApi api)
+    {
+        if (ShouldRunSteps(api))
+        {
+            api.RegisterTxType(TxType.DepositTx, new OptimismTxDecoder<Transaction>(), Always.Valid);
+            Rlp.RegisterDecoders(typeof(OptimismReceiptMessageDecoder).Assembly, true);
+        }
+    }
+
     public Task Init(INethermindApi api)
     {
         if (!ShouldRunSteps(api))
@@ -107,8 +120,6 @@ public class OptimismPlugin : IConsensusPlugin, ISynchronizationPlugin, IInitial
 
         return Task.CompletedTask;
     }
-
-    public Task InitNetworkProtocol() => Task.CompletedTask;
 
     public Task InitSynchronization()
     {
@@ -169,6 +180,16 @@ public class OptimismPlugin : IConsensusPlugin, ISynchronizationPlugin, IInitial
             _api.LogManager
         );
 
+        _ = new PivotUpdator(
+            _api.BlockTree,
+            _api.Synchronizer.SyncModeSelector,
+            _api.SyncPeerPool,
+            _syncConfig,
+            _blockCacheService,
+            _beaconSync,
+            _api.DbProvider.MetadataDb,
+            _api.LogManager);
+
         return Task.CompletedTask;
     }
 
@@ -184,6 +205,7 @@ public class OptimismPlugin : IConsensusPlugin, ISynchronizationPlugin, IInitial
         ArgumentNullException.ThrowIfNull(_api.BlockValidator);
         ArgumentNullException.ThrowIfNull(_api.RpcModuleProvider);
         ArgumentNullException.ThrowIfNull(_api.BlockProducer);
+        ArgumentNullException.ThrowIfNull(_api.TxPool);
 
         ArgumentNullException.ThrowIfNull(_beaconSync);
         ArgumentNullException.ThrowIfNull(_beaconPivot);
@@ -215,7 +237,8 @@ public class OptimismPlugin : IConsensusPlugin, ISynchronizationPlugin, IInitial
         IEngineRpcModule engineRpcModule = new EngineRpcModule(
             new GetPayloadV1Handler(payloadPreparationService, _api.SpecProvider, _api.LogManager),
             new GetPayloadV2Handler(payloadPreparationService, _api.SpecProvider, _api.LogManager),
-            new GetPayloadV3Handler(payloadPreparationService, _api.SpecProvider, _api.LogManager),
+            new GetPayloadV3Handler(payloadPreparationService, _api.SpecProvider, _api.LogManager, _api.CensorshipDetector),
+            new GetPayloadV4Handler(payloadPreparationService, _api.SpecProvider, _api.LogManager, _api.CensorshipDetector),
             new NewPayloadHandler(
                 _api.BlockValidator,
                 _api.BlockTree,
@@ -248,8 +271,11 @@ public class OptimismPlugin : IConsensusPlugin, ISynchronizationPlugin, IInitial
                 _api.Config<IMergeConfig>().SimulateBlockProduction),
             new GetPayloadBodiesByHashV1Handler(_api.BlockTree, _api.LogManager),
             new GetPayloadBodiesByRangeV1Handler(_api.BlockTree, _api.LogManager),
+            new GetPayloadBodiesByHashV2Handler(_api.BlockTree, _api.LogManager),
+            new GetPayloadBodiesByRangeV2Handler(_api.BlockTree, _api.LogManager),
             new ExchangeTransitionConfigurationV1Handler(_api.PoSSwitcher, _api.LogManager),
             new ExchangeCapabilitiesHandler(_api.RpcCapabilitiesProvider, _api.LogManager),
+            new GetBlobsHandler(_api.TxPool),
             _api.SpecProvider,
             new GCKeeper(
                 initConfig.DisableGcOnNewPayload

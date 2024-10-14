@@ -52,6 +52,7 @@ namespace Nethermind.JsonRpc.Modules.Eth.FeeHistory
                 if (ShouldCache(e.Block))
                 {
                     SaveHistorySearchInfo(e.Block);
+                    TryRunCleanup();
                 }
             });
         }
@@ -107,12 +108,12 @@ namespace Nethermind.JsonRpc.Modules.Eth.FeeHistory
         {
             BlockFeeHistorySearchInfo BlockFeeHistorySearchInfoFromBlock(Block b)
             {
-                BlobGasCalculator.TryCalculateBlobGasPricePerUnit(b.Header, out UInt256 blobGas);
+                BlobGasCalculator.TryCalculateFeePerBlobGas(b.Header, out UInt256 feePerBlobGas);
                 return new(
                     b.Number,
                     b.BaseFeePerGas,
                     BaseFeeCalculator.Calculate(b.Header, _specProvider.GetSpecFor1559(b.Number + 1)),
-                    blobGas == UInt256.MaxValue ? 0 : blobGas,
+                    feePerBlobGas == UInt256.MaxValue ? UInt256.Zero : feePerBlobGas,
                     b.GasUsed / (double)b.GasLimit,
                     (b.BlobGasUsed ?? 0) / (double)Eip4844Constants.MaxBlobGasPerBlock,
                     b.ParentHash,
@@ -190,6 +191,14 @@ namespace Nethermind.JsonRpc.Modules.Eth.FeeHistory
                 historyInfo = info.ParentHash is null ? null : GetHistorySearchInfo(info.ParentHash, info.BlockNumber - 1);
             }
 
+            TryRunCleanup();
+
+            return ResultWrapper<FeeHistoryResults>.Success(new(oldestBlockNumber, baseFeePerGas,
+                gasUsedRatio, baseFeePerBlobGas, blobGasUsedRatio, rewards));
+        }
+
+        private void TryRunCleanup()
+        {
             long headNumber = _blockTree.Head?.Number ?? 0;
             long lastCleanupHeadBlockNumber = _lastCleanupHeadBlockNumber;
             if (lastCleanupHeadBlockNumber != headNumber
@@ -199,9 +208,6 @@ namespace Nethermind.JsonRpc.Modules.Eth.FeeHistory
             {
                 _cleanupTask = Task.Run(CleanupCache);
             }
-
-            return ResultWrapper<FeeHistoryResults>.Success(new(oldestBlockNumber, baseFeePerGas,
-                gasUsedRatio, baseFeePerBlobGas, blobGasUsedRatio, rewards));
         }
 
         private void CleanupCache()

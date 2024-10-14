@@ -35,6 +35,7 @@ using Nethermind.TxPool;
 using NSubstitute;
 using NUnit.Framework;
 using System;
+using Nethermind.Evm;
 
 namespace Nethermind.JsonRpc.Test.Modules
 {
@@ -56,7 +57,7 @@ namespace Nethermind.JsonRpc.Test.Modules
         {
             LimboLogs logger = LimboLogs.Instance;
             MainnetSpecProvider specProvider = MainnetSpecProvider.Instance;
-            _ethereumEcdsa = new(specProvider.ChainId, logger);
+            _ethereumEcdsa = new(specProvider.ChainId);
 
             Peer peerA = SetUpPeerA();      //standard case
             Peer peerB = SetUpPeerB();      //Session is null
@@ -75,7 +76,7 @@ namespace Nethermind.JsonRpc.Test.Modules
 
             _txPool = new TxPool.TxPool(_ethereumEcdsa,
                 new BlobTxStorage(),
-                new ChainHeadInfoProvider(new FixedForkActivationChainHeadSpecProvider(specProvider), _blockTree, stateProvider),
+                new ChainHeadInfoProvider(new FixedForkActivationChainHeadSpecProvider(specProvider), _blockTree, stateProvider, new CodeInfoRepository()),
                 new TxPoolConfig(),
                 new TxValidator(specProvider.ChainId),
                 LimboLogs.Instance,

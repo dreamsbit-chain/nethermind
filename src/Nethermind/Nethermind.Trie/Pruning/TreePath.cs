@@ -22,12 +22,12 @@ namespace Nethermind.Trie;
 /// </summary>
 [Todo("check if its worth it to change the length to byte, or if it actually make things slower.")]
 [Todo("check if its worth it to not clear byte during TruncateMut, but will need proper comparator, span copy, etc.")]
-public struct TreePath
+public struct TreePath : IEquatable<TreePath>
 {
     public const int MemorySize = 36;
     public ValueHash256 Path;
 
-    public static TreePath Empty => new TreePath();
+    public static TreePath Empty => new();
 
     public readonly Span<byte> Span => Path.BytesAsSpan;
 
@@ -38,7 +38,7 @@ public struct TreePath
         Length = length;
     }
 
-    public int Length { get; internal set; }
+    public int Length { get; private set; }
 
     public static TreePath FromPath(ReadOnlySpan<byte> pathHash)
     {
@@ -46,7 +46,7 @@ public struct TreePath
         if (pathHash.Length == 32) return new TreePath(new ValueHash256(pathHash), 64);
 
         // Some of the test passes path directly to PatriciaTrie, but its not 32 byte.
-        TreePath newTreePath = new TreePath();
+        TreePath newTreePath = new();
         pathHash.CopyTo(newTreePath.Span);
         newTreePath.Length = pathHash.Length * 2;
         return newTreePath;
@@ -259,9 +259,11 @@ public struct TreePath
         return Length == other.Length && Path.Equals(in other.Path);
     }
 
+    public readonly bool Equals(TreePath other) => Equals(in other);
+
     public readonly override bool Equals(object? obj)
     {
-        return obj is TreePath other && Equals(other);
+        return obj is TreePath other && Equals(in other);
     }
 
     public readonly override int GetHashCode()

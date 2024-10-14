@@ -256,7 +256,7 @@ namespace Nethermind.Blockchain.Receipts
                 };
             }
 
-            IReceiptRefDecoder refDecoder = ReceiptArrayStorageDecoder.GetRefDecoder(receiptsData);
+            IReceiptRefDecoder refDecoder = _storageDecoder.GetRefDecoder(receiptsData);
 
             iterator = result ? new ReceiptsIterator(receiptsData, _blocksDb, recoveryContextFactory, refDecoder) : new ReceiptsIterator();
             return result;
@@ -321,7 +321,7 @@ namespace Nethermind.Blockchain.Receipts
             set
             {
                 _migratedBlockNumber = value;
-                _defaultColumn.Set(MigrationBlockNumberKey, MigratedBlockNumber.ToBigEndianByteArrayWithoutLeadingZeros());
+                _defaultColumn.PutSpan(MigrationBlockNumberKey.Bytes, value.ToBigEndianSpanWithoutLeadingZeros(out _));
             }
         }
 
